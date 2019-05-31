@@ -5,14 +5,14 @@ import threading
 
 class ITLA:
 
-    ITLA_NOERROR=0x00 # No error
-    ITLA_EXERROR=0x01 # Execution error, read NOP register for reason
-    ITLA_AEERROR=0x02
-    ITLA_CPERROR=0x03 # Command pending error
-    ITLA_NRERROR=0x04 # Error: laser not responding, check baud rate
-    ITLA_CSERROR=0x05
-    ITLA_ERROR_SERPORT=0x01 # Error: unable to connect to port, check port number. Should be 'COM#', e.g. 'COM2'.
-    ITLA_ERROR_SERBAUD=0x02 # Error: incorrect baud rate
+    NOERROR=0x00 # No error
+    EXERROR=0x01 # Execution error, read NOP register for reason
+    AEERROR=0x02
+    CPERROR=0x03 # Command pending error
+    NRERROR=0x04 # Error: laser not responding, check baud rate
+    CSERROR=0x05
+    ERROR_SERPORT=0x01 # Error: unable to connect to port, check port number. Should be 'COM#', e.g. 'COM2'.
+    ERROR_SERBAUD=0x02 # Error: incorrect baud rate
 
     REG_Nop=0x00 # Read a pending response or interrupted response. Often used to check communication. R/W
     REG_Mfgr=0x02 # Manufacturer (AEA mode) R
@@ -78,7 +78,7 @@ class ITLA:
         self.queue=[]
         self.maxrowticket=0
 
-        self._error=ITLA.ITLA_NOERROR
+        self._error=ITLA.NOERROR
         self.seriallock=0
 
         self.port = port
@@ -125,7 +125,7 @@ class ITLA:
         reftime=time.clock()
         while self.sercon.inWaiting()<4:
             if time.clock()>reftime+0.25:
-                self._error=ITLA.ITLA_NRERROR
+                self._error=ITLA.NRERROR
                 print('No response')
                 return(0xFF,0xFF,0xFF,0xFF)
             time.sleep(0.0001)
@@ -144,14 +144,14 @@ class ITLA:
             self._error=byte0&0x03
             return(byte0,byte1,byte2,byte3)
         else:
-            self._error=ITLA.ITLA_CSERROR
+            self._error=ITLA.CSERROR
             return(byte0,byte1,byte2,byte3)
 
     def Receive_simple_response(self):
         reftime=time.clock()
         while self.sercon.inWaiting()<4:
             if time.clock()>reftime+0.25:
-                self._error=self.ITLA_NRERROR
+                self._error=self.NRERROR
                 return(0xFF,0xFF,0xFF,0xFF)
             time.sleep(0.0001)
         byte0=ord(self.sercon.read(1))
@@ -166,11 +166,11 @@ class ITLA:
         try:
             self.sercon = serial.Serial(port,baudrate , timeout=1)
         except serial.SerialException:
-            return(ITLA.ITLA_ERROR_SERPORT)
+            return(ITLA.ERROR_SERPORT)
         baudrate2=4800
         while baudrate2<=115200:
             self.ITLACommunicate(ITLA.REG_Nop,0,0)
-            if self.ITLALastError()<>ITLA.ITLA_NOERROR:
+            if self.ITLALastError()<>ITLA.NOERROR:
                 print('Last error: %s' % self.ITLALastError())
                 #go to next baudrate
                 if baudrate2==4800:
@@ -192,7 +192,7 @@ class ITLA:
                 print(self.ITLALastError())
                 return(self.sercon)
         self.sercon.close()
-        return(ITLA.ITLA_ERROR_SERBAUD)
+        return(ITLA.ERROR_SERBAUD)
 
     def ITLADisconnect(self):
         self.sercon.close()
@@ -213,7 +213,7 @@ class ITLA:
             self.Send_command(int(ITLA.checksum(0,register,byte2,byte3))*16,register,byte2,byte3)
             test=self.Receive_response()
             b0=test[0]
-            b1=test[1] # Value not used
+            # b1=test[1] # Value not used
             b2=test[2]
             b3=test[3]
             """
@@ -316,14 +316,14 @@ class ITLA:
         if (len(self.raybin)&0x01):self.raybin.append('\x00')
         self.ITLACommunicate(ITLA.REG_Dlconfig,2,1)  #first do abort to make sure everything is ok
         #print ITLALastError()
-        if self.ITLALastError()<>ITLA.ITLA_NOERROR:
+        if self.ITLALastError()<>ITLA.NOERROR:
             return( self.sercon,'After dlconfig abort: error found. Aborting. ' + str(self.ITLALastError()))
         #initiate the transfer; INIT_WRITE=0x0001; TYPE=0x1000; RUNV=0x0000
         #temp=ITLACommunicate(sercon,REG_Dlconfig,0x0001 ^ 0x1000 ^ 0x0000,1)
         #check temp for the correct feedback
         self.ITLACommunicate(ITLA.REG_Dlconfig,3*16*256+1,1) # initwrite=1; type =3 in bits 12:15
         #print ITLALastError()
-        if self.ITLALastError()<>ITLA.ITLA_NOERROR:
+        if self.ITLALastError()<>ITLA.NOERROR:
             return(self.sercon,'After dlconfig init_write: error found. Aborting. '+str(self.ITLALastError() ))
         return(self.sercon,'')
 
@@ -342,14 +342,14 @@ class ITLA:
         self.sercon.flushInput()
         self.sercon.flushOutput()
         self.ITLACommunicate(ITLA.REG_Dlconfig,4,1) # done (bit 2)
-        if self.ITLALastError()<>ITLA.ITLA_NOERROR:
+        if self.ITLALastError()<>ITLA.NOERROR:
             return(self.sercon,'After dlconfig done: error found. Aborting. '+str(self.ITLALastError()))
         #init check
         self.ITLACommunicate(ITLA.REG_Dlconfig,16,1) #init check bit 4
-        if self.ITLALastError()==ITLA.ITLA_CPERROR:
+        if self.ITLALastError()==ITLA.CPERROR:
             while (self.ITLACommunicate(ITLA.REG_Nop,0,0)&0xff00)>0:
                 time.sleep(0.5)
-        elif self.ITLALastError()<>ITLA.ITLA_NOERROR:
+        elif self.ITLALastError()<>ITLA.NOERROR:
             return(self.sercon,'After dlconfig done: error found. Aborting. '+str(self.ITLALastError() ))
         #check for valid=1
         temp=self.ITLACommunicate(ITLA.REG_Dlstatus,0,0)
@@ -357,7 +357,7 @@ class ITLA:
             return(self.sercon,'Dlstatus not good. Aborting. ')
         #write concluding dlconfig
         self.ITLACommunicate(ITLA.REG_Dlconfig,3*256+32, 1) #init run (bit 5) + runv (bit 8:11) =3
-        if self.ITLALastError()<>ITLA.ITLA_NOERROR:
+        if self.ITLALastError()<>ITLA.NOERROR:
             return(self.sercon, 'After dlconfig init run and runv: error found. Aborting. '+str(self.ITLALastError()))
         time.sleep(1)
         #set the baudrate to 9600 and reconfigure the serial connection

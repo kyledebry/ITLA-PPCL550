@@ -5,82 +5,81 @@ Created on Tue May 28 13:35:28 2019
 @author: Kyle DeBry
 """
 
-from pure_photonics_utils import *
-import itla_convenience_methods as icm
+from itla_convenience_methods import Laser
 import logging
-import math
+import time
 
-laser = ITLA('COM2', 115200)
+laser = Laser('COM2', 115200)
 
 try:
 
     freq = 195
 
-    laser_err = icm.laser_on(laser, freq, logging.DEBUG)
+    laser_err = laser.laser_on(freq, logging.DEBUG)
 
     print('Laser error: %d' % laser_err)
-    icm.read_error(laser)
+    laser.read_error()
 
     time.sleep(1)
 
-    if laser_err == ITLA.ITLA_NOERROR:
+    if laser_err == Laser.NOERROR:
 
-        icm.clean_sweep_prep(laser, 50, 20000)
+        laser.clean_sweep_prep(50, 20000)
 
-        icm.laser_on(laser, freq, logging.debug)
+        laser.laser_on(freq, logging.INFO)
 
-        icm.clean_sweep_start(laser)
+        laser.clean_sweep_start()
 
-        offset_GHz = icm.clean_sweep_offset(laser)
+        offset_GHz = laser.clean_sweep_offset()
 
         logging.info('Clean sweep offset: %d GHz' % offset_GHz)
 
-        icm.clean_sweep_pause(laser, 20)
+        laser.clean_sweep_pause(20)
 
         wait_time = time.clock() + 5
 
         while offset_GHz > -150 and time.clock() < wait_time:
-            offset_GHz = icm.clean_sweep_offset(laser)
+            offset_GHz = laser.clean_sweep_offset()
             logging.info('Clean sweep offset: %d GHz' % offset_GHz)
             time.sleep(0.2)
-            print(1)
 
         print('Done looping')
         logging.debug('Resuming laser...')
 
-        icm.clean_sweep_start(laser)
+        laser.clean_sweep_start()
 
-        while time.clock() < wait_time + 6:
-            offset_GHz = icm.clean_sweep_offset(laser)
+        while time.clock() < wait_time + 5:
+            offset_GHz = laser.clean_sweep_offset()
             logging.info('Clean sweep offset: %d GHz' % offset_GHz)
             time.sleep(0.2)
 
         logging.info('Pausing laser')
-        icm.clean_sweep_pause(laser)
+        laser.clean_sweep_pause()
 
         time.sleep(3)
 
-        logging.info('Clean sweep off: %d' % laser.ITLACommunicate(0xE5, 0, ITLA.WRITE))
-        icm.read_error(laser)
-        icm.wait_nop(laser)
+        logging.info('Clean sweep off: %d' % laser.ITLACommunicate(0xE5, 0, Laser.WRITE))
+        time.sleep(3)
+        laser.read_error()
+        laser.wait_nop()
         time.sleep(1)
-        logging.debug('Low noise mode: %d' % laser.ITLACommunicate(0x90, 0, ITLA.WRITE))
-        icm.read_error(laser)
+        logging.debug('Low noise mode: %d' % laser.ITLACommunicate(0x90, 0, Laser.WRITE))
+        laser.read_error()
 
         time.sleep(5)
 
-        icm.laser_off(laser)
+        laser.laser_off()
 
     else:
-        logging.warn('Another error occurred: %d' % test_response)
+        logging.warn('Another error occurred: %d' % laser_err)
 
 
 finally:
-    icm.clean_sweep_stop(laser)
+    laser.clean_sweep_stop()
 
     time.sleep(1)
 
-    icm.laser_off(laser)
+    laser.laser_off()
     laser.ITLADisconnect()
 
     time.sleep(2)
