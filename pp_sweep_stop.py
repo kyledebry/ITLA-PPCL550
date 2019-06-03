@@ -5,11 +5,11 @@ Created on Tue May 28 13:35:28 2019
 @author: Kyle DeBry
 """
 
-from itla_convenience_methods import Laser
+from laser import Laser
 import logging
 import time
 
-laser = Laser('COM2', 115200)
+laser = Laser('COM2', 115200, logging.DEBUG)
 
 try:
 
@@ -36,9 +36,9 @@ try:
 
         laser.clean_sweep_pause(20)
 
-        wait_time = time.clock() + 5
+        wait_time = time.process_time() + 5
 
-        while offset_GHz > -150 and time.clock() < wait_time:
+        while offset_GHz > -150 and time.process_time() < wait_time:
             offset_GHz = laser.clean_sweep_offset()
             logging.info('Clean sweep offset: %d GHz' % offset_GHz)
             time.sleep(0.2)
@@ -48,7 +48,7 @@ try:
 
         laser.clean_sweep_start()
 
-        while time.clock() < wait_time + 5:
+        while time.process_time() < wait_time + 5:
             offset_GHz = laser.clean_sweep_offset()
             logging.info('Clean sweep offset: %d GHz' % offset_GHz)
             time.sleep(0.2)
@@ -58,12 +58,12 @@ try:
 
         time.sleep(3)
 
-        logging.info('Clean sweep off: %d' % laser.ITLACommunicate(0xE5, 0, Laser.WRITE))
+        logging.info('Clean sweep off: %d' % laser.itla_communicate(0xE5, 0, Laser.WRITE))
         time.sleep(3)
         laser.read_error()
         laser.wait_nop()
         time.sleep(1)
-        logging.debug('Low noise mode: %d' % laser.ITLACommunicate(0x90, 0, Laser.WRITE))
+        logging.debug('Low noise mode: %d' % laser.itla_communicate(0x90, 0, Laser.WRITE))
         laser.read_error()
 
         time.sleep(5)
@@ -71,7 +71,7 @@ try:
         laser.laser_off()
 
     else:
-        logging.warn('Another error occurred: %d' % laser_err)
+        logging.warning('Another error occurred: %d' % laser_err)
 
 
 finally:
@@ -80,6 +80,6 @@ finally:
     time.sleep(1)
 
     laser.laser_off()
-    laser.ITLADisconnect()
+    laser.itla_disconnect()
 
     time.sleep(2)
