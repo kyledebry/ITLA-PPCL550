@@ -36,9 +36,9 @@ try:
 
         laser.clean_sweep_pause(20)
 
-        wait_time = time.process_time() + 5
+        wait_time = time.perf_counter() + 5
 
-        while offset_GHz > -150 and time.process_time() < wait_time:
+        while offset_GHz > -150 and time.perf_counter() < wait_time:
             offset_GHz = laser.clean_sweep_offset()
             logging.info('Clean sweep offset: %d GHz' % offset_GHz)
             time.sleep(0.2)
@@ -48,7 +48,7 @@ try:
 
         laser.clean_sweep_start()
 
-        while time.process_time() < wait_time + 5:
+        while time.perf_counter() < wait_time + 5:
             offset_GHz = laser.clean_sweep_offset()
             logging.info('Clean sweep offset: %d GHz' % offset_GHz)
             time.sleep(0.2)

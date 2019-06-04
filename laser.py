@@ -18,6 +18,11 @@ class Laser(pp.ITLA):
     """
     SLED_CENTER_TEMP = 30  # Want sled temperatures to be close to 30 C
 
+    def __init__(self, port, baud=9600, log_level=logging.INFO):
+        logging.basicConfig(format='%(levelname)s: %(message)s', level=log_level)
+        logging.debug('Initializing laser')
+        super().__init__(port, baud, log_level=log_level)
+
     def read_error(self):
         """Get information about any errors raised by the laser"""
 

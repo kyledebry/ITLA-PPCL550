@@ -7,8 +7,9 @@ Created on Wed May 22 15:40:53 2019
 
 from pure_photonics_utils import *
 from laser import Laser
+import logging
 
-laser = Laser('COM2', 9600)
+laser = Laser('COM2', 9600, log_level=logging.DEBUG)
 
 laser.laser_off()
 
@@ -104,9 +105,9 @@ try:
             print('Claim THz: %d' % claim_THz)
             print('Claim GHz %f' % claim_GHz)
 
-            wait_time = time.clock() + 2
+            wait_time = time.perf_counter() + 2
 
-            while abs(freq_error) > 0 and time.clock() < wait_time:
+            while abs(freq_error) > 0 and time.perf_counter() < wait_time:
                 time.sleep(.1)
                 error_read = laser.itla_communicate(ITLA.REG_Cjumpoffset, 0, ITLA.READ)
                 freq_error = error_read / 10.0

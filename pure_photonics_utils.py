@@ -96,9 +96,11 @@ class ITLA:
         self.port = port
         self.baudrate = baud
 
+        logging.basicConfig(format='%(levelname)s: %(message)s', level=log_level)
+
         self.sercon = self.itla_connect(self.port, self.baudrate)
 
-        logging.basicConfig(format='%(levelname)s: %(message)s', level=log_level)
+        logging.debug('ITLA initialized')
 
     @staticmethod
     def strip_string(input_str):
@@ -147,21 +149,21 @@ class ITLA:
         self.sercon.write(chr(byte3).encode())
 
     def receive_response(self):
-        ref_time = time.process_time()
+        ref_time = time.perf_counter()
         while self.sercon.inWaiting() < 4:
-            if time.process_time() > ref_time + 0.25:
+            if time.perf_counter() > ref_time + 0.25:
                 self._error = ITLA.NRERROR
                 logging.error('No response')
                 return 0xFF, 0xFF, 0xFF, 0xFF
             time.sleep(0.0001)
-        # noinspection PyBroadException
         try:
             byte0 = ord(self.sercon.read(1))
             byte1 = ord(self.sercon.read(1))
             byte2 = ord(self.sercon.read(1))
             byte3 = ord(self.sercon.read(1))
-        except:
-            print('problem with serial communication. self.queue[0] =', self.queue)
+        except SerialException as s_e:
+            logging.error('Problem with serial communication. self.queue[0] =', self.queue)
+            logging.error('Exception: %s' % str(s_e))
             byte0 = 0xFF
             byte1 = 0xFF
             byte2 = 0xFF
@@ -195,9 +197,10 @@ class ITLA:
             return ITLA.ERROR_SERPORT
         baudrate2 = 4800
         while baudrate2 <= 115200:
+            logging.debug('Trying baud rate %d' % baudrate2)
             self.itla_communicate(ITLA.REG_Nop, 0, 0)
             if self.itla_last_error() != ITLA.NOERROR:
-                print('Last error: %s' % self.itla_last_error())
+                logging.debug('Last error: %s' % self.itla_last_error())
                 # go to next baudrate
                 if baudrate2 == 4800:
                     baudrate2 = 9600
@@ -214,8 +217,8 @@ class ITLA:
                 self.sercon.close()
                 self.sercon = Serial(port, baudrate2, timeout=1)
             else:
-                print('Detected baud rate %d' % baudrate2)
-                print(self.itla_last_error())
+                logging.info('Detected baud rate %d' % baudrate2)
+                logging.debug('ITLA last error: %s' % self.itla_last_error())
                 return self.sercon
         self.sercon.close()
         return ITLA.ERROR_SERBAUD
@@ -239,6 +242,9 @@ class ITLA:
         lock.release()
         while self.queue[0] != rowticket:
             rowticket = rowticket
+
+        # logging.debug('Sending ' + str(data) + ' to register ' + str(register) + ', rw = ' + str(rw))
+
         if rw == 0:
             byte2 = int(data / 256)
             byte3 = int(data - byte2 * 256)
@@ -246,7 +252,7 @@ class ITLA:
             self.send_command(int(ITLA.checksum(0, register, byte2, byte3)) * 16, register, byte2, byte3)
             test = self.receive_response()
             b0 = test[0]
-            # b1=test[1] # Value not used
+            b1 = test[1]    # Value not used
             b2 = test[2]
             b3 = test[3]
             """
@@ -255,6 +261,9 @@ class ITLA:
             print(hex(b2))
             print(hex(b3))
             """
+
+            # logging.debug('Response = {0} {1} {2} {3}'.format(hex(b0), hex(b1), hex(b2), hex(b3)))
+
             if (b0 & 0x03) == 0x02:
                 test = self.aea(b2 * 256 + b3)
                 lock.acquire()
@@ -279,6 +288,8 @@ class ITLA:
             print(hex(test[2]))
             print(hex(test[3]))
             """
+            # logging.debug('Response = {0} {1} {2} {3}'.format(hex(test[0]), hex(test[1]), hex(test[2]), hex(test[3])))
+
             return test[2] * 256 + test[3]
 
     def itla_signed_communicate(self, register, data, rw):
