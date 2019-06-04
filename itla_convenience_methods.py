@@ -402,6 +402,9 @@ class Laser(pp.ITLA):
 
         logging.debug('Current offset: %d GHz' % offset_now)
 
+        if offset < 0:
+            offset = 2**16 + offset
+
         stop = self.ITLACommunicate(Laser.REG_Csweepstop, offset, Laser.WRITE)
         logging.info('Stopping at %d GHz' % stop)
 
