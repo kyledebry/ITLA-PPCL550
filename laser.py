@@ -5,14 +5,14 @@ Created on Thu May 23 09:23:55 2019
 @author: Kyle DeBry
 """
 
-import pure_photonics_utils as pp
+from pure_photonics_utils import ITLA
 import numpy as np
 import math
 import time
 import logging
 
 
-class Laser(pp.ITLA):
+class Laser(ITLA):
     """
     Additional methods for the ITLA class to make standard commands easier.
     """
@@ -35,6 +35,10 @@ class Laser(pp.ITLA):
             logging.error('Command pending error (1). NOP reads %d' % nop_error)
         elif laser_error != Laser.NOERROR:
             logging.error('Laser error: %d' % laser_error)
+            nop_error = self.itla_communicate(Laser.REG_Nop, 0, Laser.READ)
+            logging.error('NOP reads %d' % nop_error)
+
+        return laser_error
 
     def wait_nop(self):
         """Wait until the NOP register reads an acceptable value"""
@@ -115,6 +119,28 @@ class Laser(pp.ITLA):
         assert isinstance(self, Laser)
         # Turn off the laser
         logging.info('Laser off: %d' % self.itla_communicate(Laser.REG_ResetEnable, Laser.SET_OFF, Laser.WRITE))
+
+    def send(self, register, data):
+        resp = self.itla_communicate(register, data, ITLA.WRITE)
+        error = self.read_error()
+
+        while error == ITLA.CSERROR:
+            resp = self.itla_communicate(0, 0, 0, True)
+            error = self.read_error()
+            time.sleep(0.1)
+
+        return resp
+
+    def read(self, register):
+        resp = self.itla_communicate(register, 0, ITLA.READ)
+        error = self.read_error()
+
+        while error == ITLA.CSERROR:
+            resp = self.itla_communicate(register, 0, ITLA.READ)
+            error = self.read_error()
+            time.sleep(0.1)
+
+        return resp
 
     def get_sled_slope(self):
         """Returns the slope of the sled temperature from the laser in degrees C per GHz"""

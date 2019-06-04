@@ -20,7 +20,7 @@ class ITLA:
     AEERROR = 0x02
     CPERROR = 0x03  # Command pending error
     NRERROR = 0x04  # Error: laser not responding, check baud rate
-    CSERROR = 0x05
+    CSERROR = 0x05  # Checksum error
     ERROR_SERPORT = 0x01  # Error: unable to connect to port, check port number. Should be 'COM#', e.g. 'COM2'.
     ERROR_SERBAUD = 0x02  # Error: incorrect baud rate
 
@@ -84,7 +84,7 @@ class ITLA:
     SET_OFF = 0  # When disabling laser with REG_ResetEnable, this turns off laser
 
     def __init__(self, port, baud, log_level):
-        self.latestregister = 0
+        self.latest_register = 0
         self.tempport = 0
         self.raybin = 0
         self.queue = []
@@ -99,6 +99,7 @@ class ITLA:
         logging.basicConfig(format='%(levelname)s: %(message)s', level=log_level)
 
         self.sercon = self.itla_connect(self.port, self.baudrate)
+        logging.debug(self.sercon)
 
         logging.debug('ITLA initialized')
 
@@ -173,6 +174,7 @@ class ITLA:
             return byte0, byte1, byte2, byte3
         else:
             self._error = ITLA.CSERROR
+            logging.error('CS error')
             return byte0, byte1, byte2, byte3
 
     def receive_simple_response(self):
@@ -229,9 +231,10 @@ class ITLA:
         logging.debug('Disconnecting ITLA...')
         self.sercon.close()
 
-    def itla_communicate(self, register, data, rw):
+    def itla_communicate(self, register, data, rw, resend=False):
         """ Sends data and returns the response from the device
 
+        :param resend: set to True to prompt the device to resend the last packet (if there was a CS error)
         :param register: the ITLA register to send data to
         :param data: an integer to send to the device
         :param rw: 0 = read, 1 = write
@@ -246,16 +249,20 @@ class ITLA:
         while self.queue[0] != rowticket:
             rowticket = rowticket
 
-        logging.debug('Sending ' + str(data) + ' to register ' + str(hex(register)) + ', rw = ' + str(rw))
+        # logging.debug('Sending ' + str(data) + ' to register ' + str(hex(register)) + ', rw = ' + str(rw))
 
         if rw == 0:
             byte2 = int(data / 256)
             byte3 = int(data - byte2 * 256)
-            self.latestregister = register
-            self.send_command(int(ITLA.checksum(0, register, byte2, byte3)) * 16, register, byte2, byte3)
+            self.latest_register = register
+            byte1 = int(ITLA.checksum(0, register, byte2, byte3)) * 16
+            if resend:
+                byte1 += 8
+            self.send_command(byte1, register, byte2, byte3)
             test = self.receive_response()
+
             b0 = test[0]
-            b1 = test[1]    # Value not used
+            # b1 = test[1]    # Value not used
             b2 = test[2]
             b3 = test[3]
             """
@@ -265,7 +272,7 @@ class ITLA:
             print(hex(b3))
             """
 
-            logging.debug('Response = {0} {1} {2} {3}'.format(hex(b0), hex(b1), hex(b2), hex(b3)))
+            # logging.debug('Response = {0} {1} {2} {3}'.format(hex(b0), hex(b1), hex(b2), hex(b3)))
 
             if (b0 & 0x03) == 0x02:
                 test = self.aea(b2 * 256 + b3)
@@ -276,6 +283,13 @@ class ITLA:
             lock.acquire()
             self.queue.pop(0)
             lock.release()
+
+            # if self._error != ITLA.NOERROR:
+            #     logging.error('Device error: %s' % hex(self._error))
+            #     time.sleep(0.1)
+            #     nop_response = self.itla_communicate(ITLA.REG_Nop, 0, ITLA.READ)
+            #     logging.error('NOP register reads %s' % hex(nop_response))
+
             return b2 * 256 + b3
         else:
             byte2 = int(data / 256)
@@ -285,13 +299,20 @@ class ITLA:
             lock.acquire()
             self.queue.pop(0)
             lock.release()
+
             """
             print(hex(test[0]))
             print(hex(test[1]))
             print(hex(test[2]))
             print(hex(test[3]))
             """
-            logging.debug('Response = {0} {1} {2} {3}'.format(hex(test[0]), hex(test[1]), hex(test[2]), hex(test[3])))
+            # logging.debug('Response = {0} {1} {2} {3}'.format(hex(test[0]), hex(test[1]), hex(test[2]), hex(test[3])))
+
+            # if self._error != ITLA.NOERROR:
+            #     logging.error('Device error: %s' % hex(self._error))
+            #     time.sleep(0.1)
+            #     nop_response = self.itla_communicate(ITLA.REG_Nop, 0, ITLA.READ)
+            #     logging.error('NOP register reads %s' % hex(nop_response))
 
             return test[2] * 256 + test[3]
 
@@ -320,7 +341,7 @@ class ITLA:
             time.sleep(.1)
         self.serial_lock_set()
         if rw == 0:
-            self.latestregister = register
+            self.latest_register = register
             self.send_command(int(ITLA.checksum(0, register, 0, 0)) * 16, register, 0, 0)
             self.receive_simple_response()
             self.serial_lock_unset()
