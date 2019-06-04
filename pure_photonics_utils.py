@@ -193,11 +193,12 @@ class ITLA:
 
         try:
             self.sercon = Serial(port, baud_rate, timeout=1)
-        except SerialException:
+        except SerialException as s_e:
+            logging.error(s_e)
             return ITLA.ERROR_SERPORT
         baudrate2 = 4800
+        logging.debug('Trying baud rate %d' % baud_rate)
         while baudrate2 <= 115200:
-            logging.debug('Trying baud rate %d' % baudrate2)
             self.itla_communicate(ITLA.REG_Nop, 0, 0)
             if self.itla_last_error() != ITLA.NOERROR:
                 logging.debug('Last error: %s' % self.itla_last_error())
@@ -215,15 +216,17 @@ class ITLA:
                 elif baudrate2 == 115200:
                     baudrate2 = 10000000
                 self.sercon.close()
+                logging.debug('Trying baud rate %d' % baudrate2)
                 self.sercon = Serial(port, baudrate2, timeout=1)
             else:
-                logging.info('Detected baud rate %d' % baudrate2)
+                logging.info('Detected baud rate %d' % self.sercon.baudrate)
                 logging.debug('ITLA last error: %s' % self.itla_last_error())
                 return self.sercon
         self.sercon.close()
         return ITLA.ERROR_SERBAUD
 
     def itla_disconnect(self):
+        logging.debug('Disconnecting ITLA...')
         self.sercon.close()
 
     def itla_communicate(self, register, data, rw):
@@ -243,7 +246,7 @@ class ITLA:
         while self.queue[0] != rowticket:
             rowticket = rowticket
 
-        # logging.debug('Sending ' + str(data) + ' to register ' + str(register) + ', rw = ' + str(rw))
+        logging.debug('Sending ' + str(data) + ' to register ' + str(hex(register)) + ', rw = ' + str(rw))
 
         if rw == 0:
             byte2 = int(data / 256)
@@ -262,7 +265,7 @@ class ITLA:
             print(hex(b3))
             """
 
-            # logging.debug('Response = {0} {1} {2} {3}'.format(hex(b0), hex(b1), hex(b2), hex(b3)))
+            logging.debug('Response = {0} {1} {2} {3}'.format(hex(b0), hex(b1), hex(b2), hex(b3)))
 
             if (b0 & 0x03) == 0x02:
                 test = self.aea(b2 * 256 + b3)
@@ -288,7 +291,7 @@ class ITLA:
             print(hex(test[2]))
             print(hex(test[3]))
             """
-            # logging.debug('Response = {0} {1} {2} {3}'.format(hex(test[0]), hex(test[1]), hex(test[2]), hex(test[3])))
+            logging.debug('Response = {0} {1} {2} {3}'.format(hex(test[0]), hex(test[1]), hex(test[2]), hex(test[3])))
 
             return test[2] * 256 + test[3]
 

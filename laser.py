@@ -33,6 +33,8 @@ class Laser(pp.ITLA):
         elif laser_error == Laser.CPERROR:
             nop_error = self.itla_communicate(Laser.REG_Nop, 0, Laser.READ)
             logging.error('Command pending error (1). NOP reads %d' % nop_error)
+        elif laser_error != Laser.NOERROR:
+            logging.error('Laser error: %d' % laser_error)
 
     def wait_nop(self):
         """Wait until the NOP register reads an acceptable value"""
@@ -48,7 +50,7 @@ class Laser(pp.ITLA):
         logging.info('Status: %d' % status)
         self.read_error()
 
-    def laser_on(self, freq, log_level=logging.WARNING):
+    def laser_on(self, freq):
         """Turns on the laser to the desired frequency, and returns the error code or 0"""
         assert isinstance(self, Laser)
 
@@ -56,7 +58,6 @@ class Laser(pp.ITLA):
         test_response = self.itla_communicate(Laser.REG_Nop, 0, Laser.READ)
         self.read_error()
 
-        logging.basicConfig(format='%(levelname)s: %(message)s', level=log_level)
         logging.info(test_response)
 
         # Check for two common errors
