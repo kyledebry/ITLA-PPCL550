@@ -5,7 +5,7 @@ Created on Tue May 28 13:35:28 2019
 @author: Kyle DeBry
 """
 
-from itla_convenience_methods import Laser
+from laser import Laser
 import logging
 import time
 

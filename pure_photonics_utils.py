@@ -259,6 +259,8 @@ class ITLA:
 
         resp = resp_unsigned
 
+        print(resp_unsigned)
+
         # If larger than max signed int, it is negative
         if resp_unsigned > max_2byte_int:
             resp = -1 * (2**16 - resp_unsigned)

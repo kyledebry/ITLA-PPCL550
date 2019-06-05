@@ -6,7 +6,7 @@ Created on Wed May 22 15:40:53 2019
 """
 
 from pure_photonics_utils import *
-import itla_convenience_methods as icm
+import laser as icm
 import sys
 import logging
 
