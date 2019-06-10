@@ -5,10 +5,9 @@ Created on Wed May 29 13:26:37 2019
 @author: rm3531
 """
 
-import laser as icm
-from pure_photonics_utils import *
+from laser import Laser
 
-laser = ITLA('COM2', 9600)
+laser = Laser('COM2', 9600)
 print(laser.sercon)
-icm.laser_off(laser)
-laser.ITLADisconnect()
+laser.laser_off()
+laser.itla_disconnect()
