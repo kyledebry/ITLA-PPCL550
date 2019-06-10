@@ -466,7 +466,6 @@ class Laser(ITLA):
         while offset_2 == offset_1:
             offset_2 = self.clean_sweep_offset()
             print(('Offset 2: %f' % offset_2))
-
         moving_positive = offset_2 > offset_1
 
         offset_stop = offset_2 + 2 * (offset_2 - offset_1)
