@@ -7,7 +7,7 @@ Created on Wed May 29 13:26:37 2019
 
 from laser import Laser
 
-laser = Laser('COM2', 9600)
+laser = Laser('COM2', 115200)
 print(laser.sercon)
 laser.laser_off()
 laser.itla_disconnect()
