@@ -275,7 +275,7 @@ class ITLA:
             """
             return (test[2] * 256 + test[3])
 
-    def ITLACommunicateSR(self, register, data, rw):
+    def itla_signed_communicate(self, register, data, rw):
         """Treats the response of the communication as a signed 2-bit integer"""
 
         # Get raw response, treated as unsigned int
