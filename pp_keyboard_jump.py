@@ -6,27 +6,28 @@ Created on Wed May 22 15:40:53 2019
 """
 
 from pure_photonics_utils import *
-import laser as icm
+from laser import Laser
 import curses
 import logging
+import sys
 
-laser = ITLA('COM2', 9600)
+laser = Laser('COM2', 9600, logging.DEBUG)
 
 try:
 
     freq = 193
 
-    laser_err = icm.laser_on(laser, freq, logging.DEBUG)
+    laser_err = laser.laser_on(freq)
 
     print('Laser error: %d' % laser_err)
 
     time.sleep(1)
 
-    if laser_err == ITLA.ITLA_NOERROR:
+    if laser_err == ITLA.NOERROR:
 
-        sled_slope = icm.get_sled_slope(laser)
-        sled_spacing = icm.get_sled_spacing(laser, 'CalibrationFiles\\CRTNHBM047_21_14_43_4.sled')
-        map_vals = icm.read_mapfile('CalibrationFiles\\CRTNHBM047_1000_21_14_39_59.map')
+        sled_slope = laser.get_sled_slope()
+        sled_spacing = laser.get_sled_spacing('CalibrationFiles\\CRTNHBM047_21_14_43_4.sled')
+        map_vals = Laser.read_mapfile('CalibrationFiles\\CRTNHBM047_1000_21_14_39_59.map')
 
         screen = curses.initscr()
         curses.noecho()
@@ -43,9 +44,9 @@ try:
                 print('Shutting off...')
             elif ch == ord('r'):
                 print('Restarting...')
-                icm.laser_off(laser)
+                laser.laser_off()
                 time.sleep(1)
-                icm.laser_on(laser, freq)
+                laser.laser_on(freq)
                 time.sleep(1)
             else:
                 old_freq = freq
@@ -75,7 +76,7 @@ try:
                     time.sleep(1)
 
         time.sleep(1)
-        laser.ITLACommunicate(ITLA.REG_Cjumpon, 0, ITLA.WRITE)
+        laser.itla_communicate(ITLA.REG_Cjumpon, 0, ITLA.WRITE)
 
         icm.laser_off(laser)
 
@@ -85,7 +86,7 @@ except:
     time.sleep(5)
 
 finally:
-    laser.ITLADisconnect()
+    laser.itla_disconnect()
     print('Press any key to exit')
     screen.getch()
     curses.nocbreak()

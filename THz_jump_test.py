@@ -15,13 +15,7 @@ freq = 193
 
 laser_err = laser.laser_on(freq)
 
-print(laser_err)
-
 if laser_err == ITLA.NOERROR:
-
-    sled_slope = laser.get_sled_slope()
-    sled_spacing = laser.get_sled_spacing('CalibrationFiles\\CRTNHBM047_21_14_43_4.sled')
-    map_vals = Laser.read_mapfile('CalibrationFiles\\CRTNHBM047_1000_21_14_39_59.map')
 
     for i in range(9):
         freq = 193 + i * 0.35
