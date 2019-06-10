@@ -125,6 +125,11 @@ class Laser(ITLA):
         """Sends a two-byte max integer to the device and returns the response
         """
 
+        if data is True:
+            data = 1
+        elif data is False:
+            data = 0
+
         if signed_response:
             response = self.itla_signed_communicate(register, data, ITLA.WRITE)
         else:
@@ -132,7 +137,7 @@ class Laser(ITLA):
 
         return response
 
-    def read(self, register, signed_response=False):
+    def read(self, register: int, signed_response=False) -> int:
         """Reads the value in the designated register"""
 
         if signed_response:
@@ -152,7 +157,7 @@ class Laser(ITLA):
 
         return sled_slope
 
-    def get_sled_spacing(self, sledfile_name):
+    def get_sled_spacing(self, sledfile_name: str):
         """Calculates the spacing between acceptable sled modes in degrees C"""
         assert isinstance(self, Laser)
         assert isinstance(sledfile_name, str)
@@ -465,6 +470,11 @@ class Laser(ITLA):
         moving_positive = offset_2 > offset_1
 
         offset_stop = offset_2 + 2 * (offset_2 - offset_1)
+
+        if offset_stop < -25:
+            offset_stop = -24
+        elif offset_stop > 25:
+            offset_stop = 24
 
         if moving_positive:
             offset_stop_int = math.ceil(offset_stop)
