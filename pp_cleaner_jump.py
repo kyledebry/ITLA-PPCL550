@@ -9,13 +9,13 @@ from pure_photonics_utils import *
 from laser import Laser
 import logging
 
-laser = Laser('COM2', 9600)
+laser = Laser('COM2', 9600, log_level=logging.DEBUG)
 
 try:
 
     freq = 193
 
-    laser_err = laser.laser_on(freq, logging.DEBUG)
+    laser_err = laser.laser_on(freq)
 
     print('Laser error: %d' % laser_err)
     laser.read_error()
@@ -23,10 +23,6 @@ try:
     time.sleep(1)
 
     if laser_err == ITLA.NOERROR:
-
-        sled_slope = laser.get_sled_slope()
-        sled_spacing = laser.get_sled_spacing('CalibrationFiles\\CRTNHBM047_21_14_43_4.sled')
-        map_vals = laser.read_mapfile('CalibrationFiles\\CRTNHBM047_1000_21_14_39_59.map')
 
         print('Mode %d' % laser.itla_communicate(ITLA.REG_Mode, 1, ITLA.WRITE))
 
@@ -39,7 +35,7 @@ try:
 
             freq = freq_THz + 0.0001 * freq_GHz
 
-            laser.clean_jump(freq, sled_spacing, sled_slope, map_vals)
+            laser.clean_jump(freq)
 
             time.sleep(2)
 

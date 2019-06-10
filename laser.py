@@ -17,28 +17,33 @@ class Laser(ITLA):
     Additional methods for the ITLA class to make standard commands easier.
     """
     SLED_CENTER_TEMP = 30  # Want sled temperatures to be close to 30 C
+    SLED_FILE_NAME = 'CalibrationFiles\\CRTNHBM047_21_14_43_4.sled'
+    MAP_FILE_NAME = 'CalibrationFiles\\CRTNHBM047_1000_21_14_39_59.map'
+    DEFAULT_PORT = 'COM2'
+    DEFAULT_BAUD = 115200
 
-    def __init__(self, port, baud=9600, log_level=logging.INFO):
+    def __init__(self, port=None, baud=None, log_level=logging.WARNING):
+        if not port:
+            port = Laser.DEFAULT_PORT
+        if not baud:
+            baud = Laser.DEFAULT_BAUD
+
         logging.basicConfig(format='%(levelname)s: %(message)s', level=log_level)
-        logging.debug('Initializing laser')
-        super().__init__(port, baud, log_level=log_level)
+
+        ITLA.__init__(self, port, baud)
+
+        self.set_jump_vals()
 
     def read_error(self):
         """Get information about any errors raised by the laser"""
 
-        laser_error = self.itla_last_error()
+        laser_error = self.ITLALastError()
         if laser_error == Laser.EXERROR:
             nop_error = self.itla_communicate(Laser.REG_Nop, 0, Laser.READ)
             logging.error('Execution error (1). NOP reads %d' % nop_error)
         elif laser_error == Laser.CPERROR:
             nop_error = self.itla_communicate(Laser.REG_Nop, 0, Laser.READ)
             logging.error('Command pending error (1). NOP reads %d' % nop_error)
-        elif laser_error != Laser.NOERROR:
-            logging.error('Laser error: %d' % laser_error)
-            nop_error = self.itla_communicate(Laser.REG_Nop, 0, Laser.READ)
-            logging.error('NOP reads %d' % nop_error)
-
-        return laser_error
 
     def wait_nop(self):
         """Wait until the NOP register reads an acceptable value"""
@@ -51,7 +56,7 @@ class Laser(ITLA):
             logging.debug('Status: %d' % status)
             status = self.itla_communicate(Laser.REG_Nop, 0, Laser.READ)
             time.sleep(0.25)
-        logging.info('Status: %d' % status)
+        logging.info('NOP status: %d' % status)
         self.read_error()
 
     def laser_on(self, freq):
@@ -62,25 +67,23 @@ class Laser(ITLA):
         test_response = self.itla_communicate(Laser.REG_Nop, 0, Laser.READ)
         self.read_error()
 
-        logging.info(test_response)
-
         # Check for two common errors
         if test_response == Laser.ERROR_SERBAUD:
-            logging.warning('Baud rate error')
+            logging.warn('Baud rate error')
         elif test_response == Laser.ERROR_SERPORT:
-            logging.warning('Port connection error')
+            logging.warn('Port connection error')
         elif test_response - 0x10 == Laser.NOERROR or test_response == Laser.NOERROR:
             test_response = Laser.NOERROR
             print('Connection successful! :)')
 
             # Split frequency into THz and GHz parts
-            freq_thz = math.trunc(freq)
-            freq_ghz = round((freq - freq_thz) * 10000)
+            freq_THz = math.trunc(freq)
+            freq_GHz = round((freq - freq_THz) * 10000)
 
             # Set the laser's frequency in THz
-            logging.info('%d THz' % self.itla_communicate(Laser.REG_FreqTHz, freq_thz, Laser.WRITE))
+            logging.info('%d THz' % self.itla_communicate(Laser.REG_FreqTHz, freq_THz, Laser.WRITE))
             # Set the GHz part of the laser's frequency
-            logging.info('%d * 0.1 GHz' % self.itla_communicate(Laser.REG_FreqGHz, freq_ghz, Laser.WRITE))
+            logging.info('%d * 0.1 GHz' % self.itla_communicate(Laser.REG_FreqGHz, freq_GHz, Laser.WRITE))
             # Set laser to channel 1 to make sure it comes on at currect frequency
             logging.debug('Channel: %d' % self.itla_communicate(Laser.REG_Channel, 1, Laser.WRITE))
             time.sleep(1)
@@ -88,27 +91,24 @@ class Laser(ITLA):
             enable_status = self.itla_communicate(Laser.REG_ResetEnable, Laser.SET_ON, Laser.WRITE)
             logging.info('Enable: %d' % enable_status)
             if enable_status != 1:
-                logging.debug('Laser response to enable: %d' % self.itla_last_error())
-                self.read_error()
-
-            time.sleep(1)
+                logging.debug('Laser response to enable: %d' % self.ITLALastError())
 
             self.wait_nop()
 
             # Wait for the laser to be outputting the correct power (10 dBm in this case) or 5 seconds
             wait_time = time.clock() + 5
-            optical_power = self.itla_signed_communicate(Laser.REG_Oop, 0, Laser.READ) * 0.01
+            optical_power = self.ITLACommunicateSR(Laser.REG_Oop, 0, Laser.READ) * 0.01
             logging.info('Optical power: %5.2f' % optical_power)
 
             while abs(optical_power - 10) > 1 and time.clock() < wait_time:
                 time.sleep(0.2)
-                optical_power = self.itla_signed_communicate(Laser.REG_Oop, 0, Laser.READ) * 0.01
+                optical_power = self.ITLACommunicateSR(Laser.REG_Oop, 0, Laser.READ) * 0.01
                 logging.info('Optical power: %5.2f' % optical_power)
             self.read_error()
             time.sleep(1)
 
         else:
-            logging.warning('Another error occurred: %d' % test_response)
+            logging.warn('Another error occurred: %d' % test_response)
             self.read_error()
 
         # Return error code
@@ -119,28 +119,6 @@ class Laser(ITLA):
         assert isinstance(self, Laser)
         # Turn off the laser
         logging.info('Laser off: %d' % self.itla_communicate(Laser.REG_ResetEnable, Laser.SET_OFF, Laser.WRITE))
-
-    def send(self, register, data):
-        resp = self.itla_communicate(register, data, ITLA.WRITE)
-        error = self.read_error()
-
-        while error == ITLA.CSERROR:
-            resp = self.itla_communicate(0, 0, 0, True)
-            error = self.read_error()
-            time.sleep(0.1)
-
-        return resp
-
-    def read(self, register):
-        resp = self.itla_communicate(register, 0, ITLA.READ)
-        error = self.read_error()
-
-        while error == ITLA.CSERROR:
-            resp = self.itla_communicate(register, 0, ITLA.READ)
-            error = self.read_error()
-            time.sleep(0.1)
-
-        return resp
 
     def get_sled_slope(self):
         """Returns the slope of the sled temperature from the laser in degrees C per GHz"""
@@ -245,6 +223,13 @@ class Laser(ITLA):
 
         return [freq, sled, f1temp, f2temp, f1power, f2power, current]
 
+    def set_jump_vals(self, sled_file_name=SLED_FILE_NAME, map_file_name=MAP_FILE_NAME):
+        sled_slope = self.get_sled_slope()
+        sled_spacing = self.get_sled_spacing(sled_file_name)
+        map_vals = Laser.read_mapfile(map_file_name)
+
+        self.jump_vals = [sled_slope, sled_spacing, map_vals]
+
     @staticmethod
     def get_sled_temperature(sled_spacing, sled_slope, map_vals, freq):
         """Calculates the sled temperature for a jump based on .sled and .map file values and the desired frequency."""
@@ -333,21 +318,28 @@ class Laser(ITLA):
 
         return current_interpolation
 
-    def clean_jump(self, freq, sled_spacing, sled_slope, map_vals):
+    def clean_jump(self, freq):
         """Performs a clean jump to the given frequency based on the calibration data provided."""
 
         if freq > 196.25 or freq < 191.5:
             return
 
+        sled_slope = self.jump_vals[0]
+        sled_spacing = self.jump_vals[1]
+        map_vals = self.jump_vals[2]
+
         # Split the frequency into THz and GHz parts
-        freq_thz = math.trunc(freq)
-        freq_ghz = round((freq - freq_thz) * 10000)
+        freq_THz = math.trunc(freq)
+        freq_GHz = round((freq - freq_THz) * 10000)
+
+        # Turn on clean mode
+        logging.debug('Clean mode: %d' % self.itla_communicate(Laser.REG_Mode, 1, Laser.WRITE))
 
         # Set the next frequency in THz (register is specific for clean jump)
-        logging.debug(self.itla_communicate(Laser.REG_CjumpTHz, freq_thz, Laser.WRITE))
+        logging.debug(self.itla_communicate(Laser.REG_CjumpTHz, freq_THz, Laser.WRITE))
 
         # Set the GHz part of the next frequency (register is specific for clean jump)
-        logging.debug(self.itla_communicate(Laser.REG_CjumpGHz, freq_ghz, Laser.WRITE))
+        logging.debug(self.itla_communicate(Laser.REG_CjumpGHz, freq_GHz, Laser.WRITE))
 
         # Calculate the sled temperature in units of 0.01 C and round to nearest int
         sled_temp = Laser.get_sled_temperature(sled_spacing, sled_slope, map_vals, freq)
@@ -377,34 +369,40 @@ class Laser(ITLA):
         # Read the frequency error and wait until it is below a threshold or 2 seconds passes
         wait_time = time.clock() + 2
 
-        error_read = self.itla_signed_communicate(Laser.REG_Cjumpoffset, 0, Laser.READ)
-        freq_error = error_read / 10.0
+        error_read = self.ITLACommunicateSR(Laser.REG_Cjumpoffset, 0, Laser.READ)
+        freq_error = (error_read) / 10.0
         logging.debug('Frequency error: %5.1f GHz' % freq_error)
 
         while abs(freq_error) > 0.1 and time.clock() < wait_time:
             time.sleep(.1)
-            error_read = self.itla_signed_communicate(Laser.REG_Cjumpoffset, 0, Laser.READ)
+            error_read = self.ITLACommunicateSR(Laser.REG_Cjumpoffset, 0, Laser.READ)
             freq_error = error_read / 10.0
             logging.debug('Frequency error: %5.1f GHz' % freq_error)
         logging.info('Frequency error: %5.1f GHz' % freq_error)
 
+        self.wait_nop()
+
         # Read out the laser's claimed frequency
-        claim_thz = self.itla_communicate(Laser.REG_GetFreqTHz, 0, Laser.READ)
-        claim_ghz = self.itla_communicate(Laser.REG_GETFreqGHz, 0, Laser.READ) / 10
+        claim_THz = self.itla_communicate(Laser.REG_GetFreqTHz, 0, Laser.READ)
+        claim_GHz = self.ITLACommunicateSR(Laser.REG_GETFreqGHz, 0, Laser.READ) / 10
 
-        logging.debug('Claim THz: %d' % claim_thz)
-        logging.debug('Claim GHz %f' % claim_ghz)
+        logging.debug('Claim THz: %d' % claim_THz)
+        logging.debug('Claim GHz %f' % claim_GHz)
 
-        claim_freq = claim_thz + claim_ghz / 1000.0
+        claim_freq = claim_THz + claim_GHz / 1000.0
 
-        print('Laser\'s claimed frequency: %f' % claim_freq)
+        print(('Laser\'s claimed frequency: %f' % claim_freq))
 
-    def clean_sweep_prep(self, sweep_ghz, sweep_speed):
+        self.itla_communicate(ITLA.REG_Cjumpon, 0, ITLA.WRITE)
+
+        logging.debug('Clean mode off: %d' % self.itla_communicate(Laser.REG_Mode, 0, Laser.WRITE))
+
+    def clean_sweep_prep(self, sweep_GHz, sweep_speed):
         """Sets up clean sweep for the laser at the given range and speed"""
         assert isinstance(self, Laser)
 
         # Set scan range (in GHz)
-        logging.debug('Sweep amp: %d GHz' % self.itla_communicate(Laser.REG_Csweepamp, sweep_ghz, Laser.WRITE))
+        logging.debug('Sweep amp: %d GHz' % self.itla_communicate(Laser.REG_Csweepamp, sweep_GHz, Laser.WRITE))
 
         # Set scan speed (in MHz/sec)
         logging.debug('Sweep speed: %d MHz/s' % self.itla_communicate(Laser.REG_Csweepspeed, sweep_speed, Laser.WRITE))
@@ -423,32 +421,46 @@ class Laser(ITLA):
         logging.info('Clean sweep on: %d' % self.itla_communicate(Laser.REG_Csweepon, 1, Laser.WRITE))
 
     def clean_sweep_offset(self):
-        """
-        Reads the current offset from center in GHz from the device during a clean sweep operation.
-        :return: the offset in GHz
-        """
         assert isinstance(self, Laser)
 
-        offset_ghz = self.itla_signed_communicate(Laser.REG_Csweepoffset, 0, Laser.READ) / 10
+        offset_GHz = self.ITLACommunicateSR(Laser.REG_Csweepoffset, 0, Laser.READ) / 10.0
 
-        return offset_ghz
+        return offset_GHz
 
     def clean_sweep_pause(self, offset=None):
-        """
-        Pause the clean sweep mid sweep
-        :param offset: what position in the sweep to pause the device at
-        """
         assert isinstance(self, Laser)
 
-        offset_now = round(self.clean_sweep_offset() / 10)
+        offset_1 = self.clean_sweep_offset()
+
+        print(('Current offset: %f GHz' % offset_1))
+
+        offset_2 = self.clean_sweep_offset()
+
+        while offset_2 == offset_1:
+            offset_2 = self.clean_sweep_offset()
+            print(('Offset 2: %f' % offset_2))
+
+        moving_positive = offset_2 > offset_1
+
+        offset_stop = offset_2 + 2 * (offset_2 - offset_1)
+
+        if moving_positive:
+            offset_stop_int = math.ceil(offset_stop)
+        else:
+            offset_stop_int = math.floor(offset_stop)
 
         if offset is None:
-            offset = offset_now
+            offset = offset_stop_int
+        else:
+            offset = round(offset)
 
-        logging.debug('Current offset: %d GHz' % offset_now)
+        print(('Attempting to stop at %d GHz' % offset))
 
-        stop = self.itla_communicate(Laser.REG_Csweepstop, offset, Laser.WRITE)
-        logging.info('Stopping at %d GHz' % stop)
+        if offset < 0:
+            offset = 2 ** 16 + offset
+
+        stop = self.ITLACommunicateSR(Laser.REG_Csweepstop, offset, Laser.WRITE)
+        print(('Stopping at %d GHz' % stop))
 
     def clean_sweep_stop(self):
         """Stops execution of clean sweep and exits low-noise mode"""
@@ -457,3 +469,5 @@ class Laser(ITLA):
         logging.info('Clean sweep stop: %d' % self.itla_communicate(Laser.REG_Csweepon, 0, Laser.WRITE))
 
         logging.debug('Clean mode off: %d' % self.itla_communicate(Laser.REG_Mode, 0, Laser.WRITE))
+
+        self.wait_nop()

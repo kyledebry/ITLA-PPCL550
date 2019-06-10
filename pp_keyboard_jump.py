@@ -11,13 +11,13 @@ import curses
 import logging
 import sys
 
-laser = Laser('COM2', 9600)
+laser = Laser('COM2', 9600, logging.DEBUG)
 
 try:
 
     freq = 193
 
-    laser_err = laser.laser_on(freq, logging.DEBUG)
+    laser_err = laser.laser_on(freq)
 
     print('Laser error: %d' % laser_err)
 

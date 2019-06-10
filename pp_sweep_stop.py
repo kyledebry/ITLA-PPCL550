@@ -15,7 +15,7 @@ try:
 
     freq = 195
 
-    laser_err = laser.laser_on(freq, logging.DEBUG)
+    laser_err = laser.laser_on(freq)
 
     print('Laser error: %d' % laser_err)
     laser.read_error()
@@ -25,8 +25,6 @@ try:
     if laser_err == Laser.NOERROR:
 
         laser.clean_sweep_prep(50, 20000)
-
-        laser.laser_on(freq, logging.INFO)
 
         laser.clean_sweep_start()
 
