@@ -48,23 +48,35 @@ class Laser(ITLA):
             nop_error = self.itla_communicate(Laser.REG_Nop, 0, Laser.READ)
             logging.error('Command pending error (1). NOP reads %d' % nop_error)
 
+    def check_nop(self):
+        """Reads the NOP register to get the laser's status"""
+        status = self.itla_communicate(Laser.REG_Nop, 0, Laser.READ)
+        logging.debug('Status: %d' % status)
+        return status
+
+    def check_power(self):
+        """Returns the current optical power"""
+        optical_power = self.itla_signed_communicate(Laser.REG_Oop, 0, Laser.READ) * 0.01
+
+        if optical_power < 0:
+            optical_power = 0
+
+        return optical_power
+
     def wait_nop(self):
         """Wait until the NOP register reads an acceptable value"""
         assert isinstance(self, Laser)
 
         # Wait for the laser's status to be OK
-        status = self.itla_communicate(Laser.REG_Nop, 0, Laser.READ)
-        logging.info('Status: %d' % status)
+        status = self.check_nop()
         while status > 16 or status == 0:
-            logging.debug('Status: %d' % status)
-            status = self.itla_communicate(Laser.REG_Nop, 0, Laser.READ)
+            status = self.check_nop()
             time.sleep(0.25)
         logging.info('NOP status: %d' % status)
         self.read_error()
 
-    def laser_on(self, freq):
-        """Turns on the laser to the desired frequency, and returns the error code or 0"""
-        assert isinstance(self, Laser)
+    def startup_begin(self, freq):
+        """Begins the process of turning on the laser by setting a frequency and powering on"""
 
         # Make sure the laser is responding to commands
         test_response = self.itla_communicate(Laser.REG_Nop, 0, Laser.READ)
@@ -73,8 +85,10 @@ class Laser(ITLA):
         # Check for two common errors
         if test_response == Laser.ERROR_SERBAUD:
             logging.warning('Baud rate error')
+            return test_response
         elif test_response == Laser.ERROR_SERPORT:
             logging.warning('Port connection error')
+            return test_response
         elif test_response - 0x10 == Laser.NOERROR or test_response == Laser.NOERROR:
             test_response = Laser.NOERROR
             print('Connection successful! :)')
@@ -96,28 +110,42 @@ class Laser(ITLA):
             if enable_status != 1:
                 logging.debug('Laser response to enable: %d' % self.ITLALastError())
 
+            return 0
+
+    def startup_finish(self):
+        """Finishes startup sequence by turning on clean mode"""
+        logging.info('Clean mode on: %d' % self.send(Laser.REG_Mode, 1))
+
+    def laser_on(self, freq):
+        """Turns on the laser to the desired frequency, and returns the error code or 0"""
+        assert isinstance(self, Laser)
+
+        startup_response = self.startup_begin(freq)
+
+        if startup_response == 0:
+
             self.wait_nop()
 
             # Wait for the laser to be outputting the correct power (10 dBm in this case) or 5 seconds
             wait_time = time.clock() + 5
-            optical_power = self.itla_signed_communicate(Laser.REG_Oop, 0, Laser.READ) * 0.01
+            optical_power = self.check_power()
             logging.info('Optical power: %5.2f' % optical_power)
 
             while abs(optical_power - 10) > 1 and time.clock() < wait_time:
                 time.sleep(0.2)
-                optical_power = self.itla_signed_communicate(Laser.REG_Oop, 0, Laser.READ) * 0.01
+                optical_power = self.check_power()
                 logging.info('Optical power: %5.2f' % optical_power)
             self.read_error()
             time.sleep(1)
 
-            print('Clean mode on: %d' % self.send(Laser.REG_Mode, 1))
+            self.startup_finish()
 
         else:
-            logging.warning('Another error occurred: %d' % test_response)
+            logging.warning('Another error occurred: %d' % startup_response)
             self.read_error()
 
         # Return error code
-        return test_response
+        return startup_response
 
     def laser_off(self):
         """Turns off the laser"""

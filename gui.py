@@ -12,7 +12,7 @@ from tkinter import ttk
 from laser import Laser
 import time
 
-LARGE_FONT = ("Verdana", 12)
+LARGE_FONT = ("Verdana", 14)
 style.use("ggplot")
 
 f = Figure(figsize=(5, 5), dpi=100)
@@ -26,20 +26,24 @@ graph_y = []
 
 def animate(i):
 
-    power = laser.read(Laser.REG_Oop, signed_response=True)
+    power = laser.check_power()
     t = time.perf_counter() - graph_x_start
 
     graph_x.append(t)
     graph_y.append(power)
 
     a.clear()
-    a.plot(graph_x, graph_y)
+    a.plot(graph_x[-100:], graph_y[-100:])
 
 def start_laser(controller):
-    ani = animation.FuncAnimation(f, animate, interval=1000)
-    controller.show_frame(StartPage)
-    laser.laser_on(195)
 
+    controller.show_frame(StartLaser)
+    laser.startup_begin(195)
+
+
+def stop_laser(controller):
+    controller.show_frame(StopLaser)
+    laser.laser_off()
 
 class LaserGUI(tk.Tk):
 
@@ -56,7 +60,7 @@ class LaserGUI(tk.Tk):
 
         self.frames = {}
 
-        for F in (StartPage, StartLaser):
+        for F in (StartPage, StartLaser, StopLaser):
             frame = F(container, self)
 
             self.frames[F] = frame
@@ -86,11 +90,11 @@ class StartPage(tk.Frame):
         button2.pack()
 
 
-class PageOne(tk.Frame):
+class StopLaser(tk.Frame):
 
     def __init__(self, parent, controller):
         tk.Frame.__init__(self, parent)
-        label = tk.Label(self, text="Page One", font=LARGE_FONT)
+        label = tk.Label(self, text="Turning off laser", font=LARGE_FONT)
         label.pack(pady=10, padx=10)
 
         button1 = ttk.Button(self, text="Back to Home",
@@ -109,6 +113,11 @@ class StartLaser(tk.Frame):
                              command=lambda: controller.show_frame(StartPage))
         button1.pack()
 
+        button2 = ttk.Button(self, text="Turn off Laser",
+                             command=lambda: stop_laser(controller))
+
+        button2.pack()
+
         canvas = FigureCanvasTkAgg(f, self)
         canvas.draw()
         canvas.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
@@ -122,6 +131,7 @@ laser = None
 try:
     laser = Laser()
     app = LaserGUI()
+    ani = animation.FuncAnimation(f, animate, interval=10)
     app.mainloop()
 
 finally:
