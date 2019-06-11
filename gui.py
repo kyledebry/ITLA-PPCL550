@@ -17,7 +17,7 @@ style.use("ggplot")
 
 f = Figure(figsize=(5, 5), dpi=100)
 a = f.add_subplot(111)
-laser = Laser()
+
 
 graph_x = []
 graph_x_start = 0
@@ -118,6 +118,11 @@ class StartLaser(tk.Frame):
         canvas._tkcanvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
 
-app = LaserGUI()
-app.mainloop()
-laser.itla_disconnect()
+laser = None
+try:
+    laser = Laser()
+    app = LaserGUI()
+    app.mainloop()
+
+finally:
+    laser.itla_disconnect()

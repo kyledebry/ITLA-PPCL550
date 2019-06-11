@@ -8,6 +8,7 @@ import serial
 import time
 import struct
 import threading
+import logging
 
 
 class ITLA:
@@ -184,7 +185,8 @@ class ITLA:
 
         try:
             self.sercon = serial.Serial(port, baudrate, timeout=1)
-        except serial.SerialException:
+        except serial.SerialException as e:
+            logging.error('Serial port error: %s' % e)
             return (ITLA.ERROR_SERPORT)
         baudrate2 = 4800
         while baudrate2 <= 115200:
@@ -211,6 +213,7 @@ class ITLA:
                 print((self.ITLALastError()))
                 return (self.sercon)
         self.sercon.close()
+        logging.error('No response from device')
         return (ITLA.ERROR_SERBAUD)
 
     def itla_disconnect(self):

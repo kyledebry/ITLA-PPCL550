@@ -32,6 +32,8 @@ class Laser(ITLA):
 
         ITLA.__init__(self, port, baud)
 
+        print(self.sercon)
+
         self.jump_values = None
         self.set_jump_vals()
 
@@ -108,6 +110,8 @@ class Laser(ITLA):
             self.read_error()
             time.sleep(1)
 
+            print('Clean mode on: %d' % self.send(Laser.REG_Mode, 1))
+
         else:
             logging.warning('Another error occurred: %d' % test_response)
             self.read_error()
@@ -118,6 +122,9 @@ class Laser(ITLA):
     def laser_off(self):
         """Turns off the laser"""
         assert isinstance(self, Laser)
+
+        print('Clean mode off: %d' % self.send(Laser.REG_Mode, 0))
+
         # Turn off the laser
         logging.info('Laser off: %d' % self.itla_communicate(Laser.REG_ResetEnable, Laser.SET_OFF, Laser.WRITE))
 
@@ -422,8 +429,6 @@ class Laser(ITLA):
 
         self.itla_communicate(ITLA.REG_Cjumpon, 0, ITLA.WRITE)
 
-        logging.debug('Clean mode off: %d' % self.itla_communicate(Laser.REG_Mode, 0, Laser.WRITE))
-
     def clean_sweep_prep(self, sweep_ghz, sweep_speed):
         """Sets up clean sweep for the laser at the given range and speed"""
         assert isinstance(self, Laser)
@@ -498,7 +503,5 @@ class Laser(ITLA):
         assert isinstance(self, Laser)
 
         logging.info('Clean sweep stop: %d' % self.itla_communicate(Laser.REG_Csweepon, 0, Laser.WRITE))
-
-        logging.debug('Clean mode off: %d' % self.itla_communicate(Laser.REG_Mode, 0, Laser.WRITE))
 
         self.wait_nop()
