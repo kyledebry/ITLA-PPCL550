@@ -71,6 +71,21 @@ class MainApplication(tk.Frame):
 
         self.pack()
 
+        self.laser = None
+
+    def connect_laser(self):
+        self.laser = Laser()
+        self.main_and_commands.main.status.text.config(text="Laser connected.")
+
+    def laser_on(self):
+        self.laser.startup_begin()
+
+    def quit(self):
+        if self.laser:
+            self.laser.itla_disconnect()
+
+        quit()
+
 
 class MainAndCommands(tk.Frame):
     def __init__(self, parent, *args, **kwargs):
@@ -90,9 +105,25 @@ class Main(tk.Frame):
         self.parent = parent
 
         self.status = Status(self)
+        self.context = Context(self)
 
         self.status.pack(side="top", padx=10, pady=10)
+        self.context.pack(side="bottom", padx=10, pady=10)
 
+
+class Context(tk.Frame):
+    def __init__(self, parent, *args, **kwargs):
+        tk.Frame.__init__(self, parent, *args, **kwargs)
+        self.parent = parent
+
+        self.context = BlankContext(self)
+        self.context.pack(padx=300, pady=300)
+
+
+class BlankContext(tk.Frame):
+    def __init__(self, parent, *args, **kwargs):
+        tk.Frame.__init__(self, parent, *args, **kwargs)
+        self.parent = parent
 
 
 class Status(tk.Frame):
@@ -114,7 +145,7 @@ class NavigationBar(tk.Frame):
 
         self.button_home = NavigationButton(self, "Home", None)
         self.button_power = NavigationButton(self, "Power Monitor", None)
-        self.button_close = NavigationButton(self, "Close", quit)
+        self.button_close = NavigationButton(self, "Close", self.parent.quit)
 
         self.button_home.pack(fill="y")
         self.button_power.pack(fill="y")
@@ -203,12 +234,12 @@ class StartLaser(tk.Frame):
         canvas._tkcanvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
 
-laser = None
+app = None
 try:
-    laser = Laser()
     app = MainApplication(tk.Tk())
+    app.connect_laser()
     # ani = animation.FuncAnimation(f, animate, interval=10)
     app.mainloop()
 
 finally:
-    laser.itla_disconnect()
+    app.laser.itla_disconnect()
