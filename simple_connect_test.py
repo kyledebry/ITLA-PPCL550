@@ -2,7 +2,7 @@
 from laser import Laser
 import logging, time
 
-laser = Laser('COM2', 115200, logging.DEBUG)
+laser = Laser('COM12', 115200, logging.DEBUG)
 
 print('Test: %d' % laser.itla_communicate(Laser.REG_Nop, 0, Laser.READ))
 

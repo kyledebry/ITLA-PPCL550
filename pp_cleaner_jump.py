@@ -9,7 +9,7 @@ from pure_photonics_utils import *
 from laser import Laser
 import logging
 
-laser = Laser('COM2', 9600, log_level=logging.DEBUG)
+laser = Laser('COM12', 9600, log_level=logging.DEBUG)
 
 try:
 

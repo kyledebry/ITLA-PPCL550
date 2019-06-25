@@ -19,7 +19,7 @@ class Laser(ITLA):
     SLED_CENTER_TEMP = 30  # Want sled temperatures to be close to 30 C
     SLED_FILE_NAME = 'CalibrationFiles\\CRTNHBM047_21_14_43_4.sled'
     MAP_FILE_NAME = 'CalibrationFiles\\CRTNHBM047_1000_21_14_39_59.map'
-    DEFAULT_PORT = 'COM2'
+    DEFAULT_PORT = 'COM12'
     DEFAULT_BAUD = 115200
 
     def __init__(self, port=None, baud=None, log_level=logging.WARNING):
