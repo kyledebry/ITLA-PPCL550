@@ -5,7 +5,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 import matplotlib.animation as animation
 from matplotlib import style
-
+import math
 import tkinter as tk
 from tkinter import ttk
 
@@ -24,33 +24,114 @@ graph_x_start = 0
 graph_y = []
 
 
-def animate(i):
+class Observable:
+    def __init__(self, initial_value=None):
+        self.data = initial_value
+        self.callbacks = {}
 
-    power = laser.check_power()
-    t = time.perf_counter() - graph_x_start
+    def addCallback(self, func):
+        self.callbacks[func] = 1
 
-    graph_x.append(t)
-    graph_y.append(power)
+    def delCallback(self, func):
+        del self.callbacks[func]
 
-    a.clear()
-    a.plot(graph_x[-100:], graph_y[-100:])
+    def _docallbacks(self):
+        for func in self.callbacks:
+            func(self.data)
 
-    if power >= 10:
-        laser.wait_nop()
+    def set(self, data):
+        self.data = data
+        self._docallbacks()
 
+    def get(self):
+        return self.data
 
-def start_laser(controller):
-
-    controller.show_frame(StartLaser)
-    laser.startup_begin(195)
-
-
-def stop_laser(controller):
-    controller.show_frame(StopLaser)
-    laser.laser_off()
+    def unset(self):
+        self.data = None
 
 
-class MainApplication(tk.Frame):
+class Controller:
+    def __init__(self):
+        self.model = Model()
+        self.view = View(tk.Tk())
+
+        self.view.navigation.button_close.add_callback(self.close)
+        self.view.main_and_commands.commands.button_on.add_callback(self.laser_on)
+        self.view.main_and_commands.commands.button_off.add_callback(self.laser_off)
+
+        self.model.frequency.addCallback(self.frequency_changed)
+        self.model.power.addCallback(self.power_changed)
+        self.model.on.addCallback(self.state)
+
+        self.view.bind_all("<1>", lambda event: event.widget.focus_set())
+        self.view.mainloop()
+
+    def power_changed(self, power):
+        self.view.main_and_commands.status.set_power(power)
+
+    def frequency_changed(self, frequency):
+        self.view.main_and_commands.status.set_frequency(frequency)
+
+    def disconnect_laser(self):
+        self.model.disconnect()
+
+    def close(self):
+        self.disconnect_laser()
+        quit()
+
+    def laser_on(self):
+        self.view.main_and_commands.commands.button_on.disable()
+        self.model.laser_on()
+
+    def laser_off(self):
+        self.view.main_and_commands.commands.button_off.disable()
+        self.model.laser_off()
+
+    def state(self, on):
+        if on:
+            self.view.main_and_commands.commands.button_on.disable()
+            self.view.main_and_commands.commands.button_off.enable()
+        else:
+            self.view.main_and_commands.commands.button_on.enable()
+            self.view.main_and_commands.commands.button_off.disable()
+
+
+class Model:
+    def __init__(self):
+        self.laser = Laser()
+        self.frequency = Observable()
+        self.set_startup_frequency(195)
+        self.power = Observable(0)
+        self.offset = Observable(0)
+        self.on = Observable(False)
+
+    def set_startup_frequency(self, frequency):
+        self.frequency.set(frequency)
+
+    def laser_on(self):
+        self.laser.startup_begin(self.frequency.get())
+
+        while self.power.get() < 9.99:
+            self.power.set(self.laser.check_power())
+
+        while self.laser.check_nop() > 16:
+            time.sleep(0.001)
+
+        self.laser.startup_finish()
+
+        self.power.set(self.laser.check_power())
+        self.on.set(True)
+
+    def laser_off(self):
+        self.laser.laser_off()
+        self.power.set(0)
+        self.on.set(False)
+
+    def disconnect(self):
+        self.laser.itla_disconnect()
+
+
+class View(tk.Frame):
     def __init__(self, parent, *args, **kwargs):
         tk.Frame.__init__(self, parent, *args, **kwargs)
         self.parent = parent
@@ -66,21 +147,15 @@ class MainApplication(tk.Frame):
 
         self.pack(fill="both", expand=True)
 
-        self.laser = None
-
     def connect_laser(self):
-        self.laser = Laser()
-        self.main_and_commands.status.text.config(text="Laser connected.")
+        self.main_and_commands.status.status.config(text="Laser connected.")
         self.main_and_commands.status.progress_bar.config(value=100)
 
-    def laser_on(self):
-        self.laser.startup_begin()
+    def change_power(self, power):
+        self.main_and_commands.status.set_power(power)
 
-    def quit(self):
-        if self.laser:
-            self.laser.itla_disconnect()
-
-        quit()
+    def change_frequency(self, frequency):
+        self.main_and_commands.status.set_frequency(frequency)
 
 
 class Main(tk.Frame):
@@ -123,11 +198,24 @@ class Status(tk.Frame):
         tk.Frame.__init__(self, parent, *args, **kwargs)
         self.parent = parent
 
-        self.text = ttk.Label(self, text="Connecting to laser...")
-        self.progress_bar = ttk.Progressbar(self, length=200, value=0)
+        style = ttk.Style()
+        style.configure("GREY.TLabel", foreground="black", background="#ccc")
 
-        self.text.pack(side="top", pady=5, padx=10, expand=True)
-        self.progress_bar.pack(side="bottom", pady=5, padx=20, fill="x", expand=False)
+        self.status = ttk.Label(self, text="Connecting to laser...")
+        self.progress_bar = ttk.Progressbar(self, length=200, value=0)
+        self.power = ttk.Label(self, text="Power: 0 dBm", style="GREY.TLabel")
+        self.frequency = ttk.Label(self, text="Frequency:", style="GREY.TLabel")
+
+        self.status.pack(pady=5, padx=10, expand=True)
+        self.progress_bar.pack(pady=5, padx=20, fill="x", expand=False)
+        self.power.pack(side="left", pady=5, padx=20, ipadx=25, fill="x", expand=True)
+        self.frequency.pack(side="right", pady=5, padx=20, ipadx=25, fill="x", expand=True)
+
+    def set_power(self, power):
+        self.power.config(text="Power: {} dBm".format(power))
+
+    def set_frequency(self, frequency):
+        self.frequency.config(text="Frequency: {} THz".format(frequency))
 
 
 class NavigationBar(tk.Frame):
@@ -138,7 +226,7 @@ class NavigationBar(tk.Frame):
         self.button_home = NavigationButton(self, "Home", None)
         self.button_power = NavigationButton(self, "Power Monitor", None)
         self.button_frequency = NavigationButton(self, "Frequency Monitor", None)
-        self.button_close = NavigationButton(self, "Close", self.parent.quit)
+        self.button_close = NavigationButton(self, "Close", None)
 
         self.button_home.pack(fill="both", expand=True)
         self.button_power.pack(fill="both", expand=True)
@@ -153,6 +241,15 @@ class NavigationButton(tk.Frame):
 
         self.button = ttk.Button(self, text=label, command=action, width=20)
         self.button.pack(pady=5, ipady=20, fill="both", expand=True)
+
+    def add_callback(self, callback):
+        self.button.config(command=callback)
+
+    def disable(self):
+        self.button.state(['disabled'])
+
+    def enable(self):
+        self.button.state(['!disabled'])
 
 
 class CommandBar(tk.Frame):
@@ -169,11 +266,13 @@ class CommandBar(tk.Frame):
         self.button_on.grid(row=0, column=0, sticky=full_sticky)
         self.button_off = CommandButton(self, "Laser Off", None)
         self.button_off.grid(row=1, column=0, sticky=full_sticky)
+        self.button_off.disable()
 
         self.jump_entry = FrequencyEntryAndLabel(self, "Jump frequency (THz):")
         self.jump_entry.grid(row=0, column=1, padx=5)
         self.button_jump = CommandButton(self, "Frequency Jump", None)
         self.button_jump.grid(row=1, column=1, sticky=full_sticky)
+        self.button_jump.disable()
 
         self.sweep_entry = FrequencyEntryAndLabel(self, "Sweep range (GHz)", 50, 0, 50)
         self.sweep_entry.grid(row=0, column=2, padx=5)
@@ -181,6 +280,7 @@ class CommandBar(tk.Frame):
         self.speed_entry.grid(row=0, column=3, padx=5)
         self.button_sweep = CommandButton(self, "Frequency Sweep", None)
         self.button_sweep.grid(row=1, column=2, columnspan=2, sticky=full_sticky)
+        self.button_sweep.disable()
 
 
 class FrequencyEntryAndLabel(tk.Frame):
@@ -253,6 +353,15 @@ class CommandButton(tk.Frame):
         self.button = ttk.Button(self, text=label, command=action, width=-20)
         self.button.pack(fill="both", pady=5, padx=10, ipady=5)
 
+    def disable(self):
+        self.button.state(['disabled'])
+
+    def enable(self):
+        self.button.state(['!disabled'])
+
+    def add_callback(self, callback):
+        self.button.config(command=callback)
+
 
 class StartPage(tk.Frame):
 
@@ -309,11 +418,8 @@ class StartLaser(tk.Frame):
 
 app = None
 try:
-    app = MainApplication(tk.Tk())
-    app.bind_all("<1>", lambda event: event.widget.focus_set())
-    app.connect_laser()
-    # ani = animation.FuncAnimation(f, animate, interval=10)
-    app.mainloop()
+    app = Controller()
 
 finally:
-    app.laser.itla_disconnect()
+    if app:
+        app.disconnect_laser()

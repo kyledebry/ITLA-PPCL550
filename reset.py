@@ -11,7 +11,7 @@ from laser import Laser
 laser = None
 
 try:
-    laser = Laser('COM2', 115200, log_level=logging.DEBUG)
+    laser = Laser('COM12', 115200, log_level=logging.DEBUG)
     laser.laser_off()
 finally:
     laser.itla_disconnect()
