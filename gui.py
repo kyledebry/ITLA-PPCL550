@@ -1,27 +1,10 @@
-import matplotlib
-
-matplotlib.use("TkAgg")
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from matplotlib.figure import Figure
-import matplotlib.animation as animation
-from matplotlib import style
-import math
 import tkinter as tk
 from tkinter import ttk
-
+from threading import Thread, Lock, Event
 from laser import Laser
 import time
-
-LARGE_FONT = ("Verdana", 14)
-style.use("ggplot")
-
-f = Figure(figsize=(5, 5), dpi=100)
-a = f.add_subplot(111)
-
-
-graph_x = []
-graph_x_start = 0
-graph_y = []
+from enum import Enum, auto
+import math
 
 
 class Observable:
@@ -54,23 +37,43 @@ class Controller:
     def __init__(self):
         self.model = Model()
         self.view = View(tk.Tk())
+        self.progress = Controller.ProgressType.CONNECTION
+        self.stop_standard_update = Event()
+        self.gui_lock = self.view.lock
+        self.clean_jump_frequency = 195
 
         self.view.navigation.button_close.add_callback(self.close)
         self.view.main_and_commands.commands.button_on.add_callback(self.laser_on)
         self.view.main_and_commands.commands.button_off.add_callback(self.laser_off)
+        self.view.main_and_commands.commands.jump_entry.frequency_entry.frequency.addCallback(self.set_clean_jump)
+        self.view.main_and_commands.commands.button_jump.add_callback(self.clean_jump)
 
         self.model.frequency.addCallback(self.frequency_changed)
+        self.model.offset.addCallback(self.offset_changed)
+        self.model.clean_jump_active.addCallback(self.clean_jump_active)
         self.model.power.addCallback(self.power_changed)
         self.model.on.addCallback(self.state)
+        self.model.connected.addCallback(self.connected)
+
+        self.model.connect_laser()
+        self.model.set_startup_frequency(195)
 
         self.view.bind_all("<1>", lambda event: event.widget.focus_set())
         self.view.mainloop()
 
     def power_changed(self, power):
-        self.view.main_and_commands.status.set_power(power)
+        self.view.main_and_commands.status.set_power(round(power, 2))
+        if self.progress == Controller.ProgressType.POWER:
+            self.progress_bar(power / 10)
 
     def frequency_changed(self, frequency):
         self.view.main_and_commands.status.set_frequency(frequency)
+
+    def offset_changed(self, offset_ghz):
+        self.view.main_and_commands.main.context.set_offset(offset_ghz)
+        if self.progress == Controller.ProgressType.OFFSET:
+            progress = min(1 - math.sqrt(abs(offset_ghz / 10000)), 0)
+            self.progress_bar(progress)
 
     def disconnect_laser(self):
         self.model.disconnect()
@@ -81,63 +84,173 @@ class Controller:
 
     def laser_on(self):
         self.view.main_and_commands.commands.button_on.disable()
-        self.model.laser_on()
+        self.view.change_status('Powering laser on...')
+        self.progress = Controller.ProgressType.POWER
+        self.progress_bar(0)
+        self.stop_standard_update.clear()
+        laser_on_thread = Thread(target=self.model.laser_on)
+        laser_on_thread.start()
 
     def laser_off(self):
+        self.stop_standard_update.set()
         self.view.main_and_commands.commands.button_off.disable()
+        self.view.change_status('Laser is off.')
         self.model.laser_off()
 
     def state(self, on):
         if on:
             self.view.main_and_commands.commands.button_on.disable()
             self.view.main_and_commands.commands.button_off.enable()
+            self.view.main_and_commands.commands.button_jump.enable()
+            self.progress = Controller.ProgressType.NONE
+            self.progress_bar(1)
+            self.view.change_status('Laser is on.')
+
+            laser_update_thread = Thread(target=self.model.standard_update,
+                                         args=(self.gui_lock, self.stop_standard_update))
+            laser_update_thread.start()
         else:
             self.view.main_and_commands.commands.button_on.enable()
             self.view.main_and_commands.commands.button_off.disable()
 
+    def connected(self, connected):
+        if connected:
+            self.view.change_status('Connected to laser.')
+            if self.progress == Controller.ProgressType.CONNECTION:
+                self.progress_bar(1)
+        else:
+            self.view.change_status('Laser not connected')
+
+    def set_clean_jump(self, frequency):
+        self.clean_jump_frequency = frequency
+
+    def clean_jump(self):
+        clean_jump_thread = Thread(target=self.model.clean_jump, args=(self.clean_jump_frequency,))
+        clean_jump_thread.start()
+
+    def clean_jump_active(self, active):
+        if active:
+            self.progress = Controller.ProgressType.OFFSET
+            self.view.main_and_commands.commands.button_jump.disable()
+            self.view.change_status('Performing clean jump...')
+        else:
+            self.progress = Controller.ProgressType.NONE
+            self.progress_bar(1)
+            self.view.main_and_commands.commands.button_jump.enable()
+            self.view.change_status('Clean jump complete.')
+
+    def progress_bar(self, progress):
+        self.view.change_progress(100 * progress)
+
+    class ProgressType(Enum):
+        NONE = auto()
+        CONNECTION = auto()
+        POWER = auto()
+        OFFSET = auto()
+
 
 class Model:
     def __init__(self):
-        self.laser = Laser()
         self.frequency = Observable()
-        self.set_startup_frequency(195)
         self.power = Observable(0)
         self.offset = Observable(0)
         self.on = Observable(False)
+        self.connected = Observable(False)
+        self.clean_jump_active = Observable(False)
+
+        self.lock = Lock()
+
+        self.laser = None
 
     def set_startup_frequency(self, frequency):
         self.frequency.set(frequency)
 
+    def connect_laser(self):
+        with self.lock:
+            self.laser = Laser()
+            self.connected.set(True)
+
     def laser_on(self):
-        self.laser.startup_begin(self.frequency.get())
+        with self.lock:
+            self.laser.startup_begin(self.frequency.get())
 
-        while self.power.get() < 9.99:
+            while self.power.get() < 9.99:
+                self.power.set(self.laser.check_power())
+
+            while self.laser.check_nop() > 16:
+                time.sleep(0.001)
+
+            self.laser.startup_finish()
             self.power.set(self.laser.check_power())
-
-        while self.laser.check_nop() > 16:
-            time.sleep(0.001)
-
-        self.laser.startup_finish()
-
-        self.power.set(self.laser.check_power())
-        self.on.set(True)
+            self.on.set(True)
 
     def laser_off(self):
-        self.laser.laser_off()
-        self.power.set(0)
-        self.on.set(False)
+        with self.lock:
+            self.laser.laser_off()
+            self.power.set(0)
+            self.on.set(False)
 
     def disconnect(self):
-        self.laser.itla_disconnect()
+        with self.lock:
+            if self.laser:
+                self.laser.itla_disconnect()
+            self.connected.set(False)
+
+    def standard_update(self, gui_lock: Lock, update_stop_event: Event):
+        while not update_stop_event.is_set():
+            with self.lock and gui_lock:
+                self.power.set(self.laser.check_power())
+                freq_thz = self.laser.read(Laser.REG_FreqTHz)
+                freq_ghz = self.laser.read(Laser.REG_FreqGHz)
+                self.frequency.set(freq_thz + freq_ghz / 10000)
+                self.offset.set(self.laser.read(Laser.REG_Offset))
+
+    def clean_jump(self, frequency):
+        self.clean_jump_active.set(True)
+        with self.lock:
+            self.laser.clean_jump_start(frequency)
+
+        # Read the frequency error and wait until it is below a threshold or 2 seconds passes
+        wait_time = time.perf_counter() + 2
+
+        with self.lock:
+            error_read = self.laser.read(Laser.REG_Cjumpoffset)
+        freq_error = error_read / 10.0
+        self.offset.set(freq_error)
+
+        while abs(freq_error) > 0.1 and time.perf_counter() < wait_time:
+            with self.lock:
+                error_read = self.laser.read(Laser.REG_Cjumpoffset)
+            freq_error = error_read / 10.0
+            self.offset.set(freq_error)
+
+        with self.lock:
+            self.laser.wait_nop()
+
+        # Read out the laser's claimed frequency
+        with self.lock:
+            claim_thz = self.laser.read(Laser.REG_GetFreqTHz)
+            claim_ghz = self.laser.read(Laser.REG_GETFreqGHz) / 10
+        claim_freq = claim_thz + claim_ghz / 1000.0
+
+        self.frequency.set(claim_freq)
+
+        print('Laser\'s claimed frequency: %f' % claim_freq)
+
+        with self.lock:
+            self.laser.clean_jump_finish()
+
+        self.clean_jump_active.set(False)
 
 
 class View(tk.Frame):
     def __init__(self, parent, *args, **kwargs):
         tk.Frame.__init__(self, parent, *args, **kwargs)
         self.parent = parent
+        self.lock = Lock()
 
-        #self.tk.iconbitmap(self, default="favicon.ico")
-        #self.tk.wm_title(self, "ITLA-PPCL550 Control")
+        # self.tk.iconbitmap(self, default="favicon.ico")
+        # self.tk.wm_title(self, "ITLA-PPCL550 Control")
 
         self.main_and_commands = Main(self)
         self.navigation = NavigationBar(self)
@@ -157,6 +270,12 @@ class View(tk.Frame):
     def change_frequency(self, frequency):
         self.main_and_commands.status.set_frequency(frequency)
 
+    def change_status(self, status):
+        self.main_and_commands.status.set_status(status)
+
+    def change_progress(self, progress):
+        self.main_and_commands.status.set_progress(progress)
+
 
 class Main(tk.Frame):
     def __init__(self, parent, *args, **kwargs):
@@ -169,11 +288,11 @@ class Main(tk.Frame):
         self.bottom_separator = ttk.Separator(self)
         self.commands = CommandBar(self)
 
-        self.status.pack(side="top", padx=10, pady=10, fill="x", expand=False)
-        self.top_separator.pack(side="top", fill="x", padx=10, pady=5)
-        self.main.pack(side="top", fill="both", expand=True)
-        self.bottom_separator.pack(side="top", fill="x", padx=10, pady=5)
-        self.commands.pack(side="bottom", fill="x", expand=False)
+        self.status.pack(padx=10, pady=10, fill="x", expand=False)
+        self.top_separator.pack(fill="x", padx=10, pady=5)
+        self.main.pack(fill="both", expand=True)
+        self.bottom_separator.pack(fill="x", padx=10, pady=5)
+        self.commands.pack(fill="x", expand=False)
 
 
 class Context(tk.Frame):
@@ -181,8 +300,20 @@ class Context(tk.Frame):
         tk.Frame.__init__(self, parent, *args, **kwargs)
         self.parent = parent
 
-        self.context = BlankContext(self)
+        self.context = FrequencyContext(self)
         self.context.pack(fill="both", expand=True)
+
+
+class FrequencyContext(tk.Frame):
+    def __init__(self, parent, *args, **kwargs):
+        tk.Frame.__init__(self, parent, *args, **kwargs)
+        self.parent = parent
+
+        self.offset_frequency_label = ttk.Label(text="Frequency offset: 0 GHz")
+        self.offset_frequency_label.pack(padx=20, pady=20, expand=True, fill="x")
+
+    def set_offset(self, offset_ghz):
+        self.offset_frequency_label.config(text="Frequency offset: {} GHz".format(offset_ghz))
 
 
 class BlankContext(tk.Frame):
@@ -216,6 +347,12 @@ class Status(tk.Frame):
 
     def set_frequency(self, frequency):
         self.frequency.config(text="Frequency: {} THz".format(frequency))
+
+    def set_status(self, status):
+        self.status.config(text=status)
+
+    def set_progress(self, progress):
+        self.progress_bar.config(value=progress)
 
 
 class NavigationBar(tk.Frame):
@@ -257,7 +394,7 @@ class CommandBar(tk.Frame):
         tk.Frame.__init__(self, parent, *args, **kwargs)
         self.parent = parent
 
-        full_sticky = tk.N+tk.S+tk.E+tk.W
+        full_sticky = tk.N + tk.S + tk.E + tk.W
 
         for c in range(5):
             self.grid_columnconfigure(c, weight=1)
@@ -307,39 +444,39 @@ class FrequencyEntry(tk.Frame):
         self.entry.pack(padx=10, pady=5)
         self.min_freq = min_freq
         self.max_freq = max_freq
-        self.frequency = freq
+        self.frequency = Observable(freq)
 
-        self.entry.insert(0, str(self.frequency))
+        self.entry.insert(0, str(self.frequency.get()))
 
     def value(self):
         return self.entry.get()
 
     def validate(self, action, index, value_if_allowed,
-                       prior_value, text, validation_type, trigger_type, widget_name):
+                 prior_value, text, validation_type, trigger_type, widget_name):
         if text in '0123456789.-+':
             try:
                 value_float = float(value_if_allowed)
 
                 if self.min_freq < value_float < self.max_freq:
-                    self.frequency = round(value_float, 4)
+                    self.frequency.set(round(value_float, 4))
                     self.entry.delete(0, tk.END)
-                    self.entry.insert(0, str(self.frequency))
+                    self.entry.insert(0, str(self.frequency.get()))
                     return True
                 else:
                     self.bell()
                     self.entry.delete(0, tk.END)
-                    self.entry.insert(0, str(self.frequency))
+                    self.entry.insert(0, str(self.frequency.get()))
                     return False
 
             except ValueError:
                 self.bell()
                 self.entry.delete(0, tk.END)
-                self.entry.insert(0, str(self.frequency))
+                self.entry.insert(0, str(self.frequency.get()))
                 return False
         else:
             self.bell()
             self.entry.delete(0, tk.END)
-            self.entry.insert(0, str(self.frequency))
+            self.entry.insert(0, str(self.frequency.get()))
             return False
 
 
@@ -361,59 +498,6 @@ class CommandButton(tk.Frame):
 
     def add_callback(self, callback):
         self.button.config(command=callback)
-
-
-class StartPage(tk.Frame):
-
-    def __init__(self, parent, controller):
-        tk.Frame.__init__(self, parent)
-        label = tk.Label(self, text=('ITLA-PPCL550 Control'), font=LARGE_FONT)
-        label.pack(pady=10, padx=10)
-
-        button1 = ttk.Button(self, text="Laser On",
-                             command=lambda: start_laser(controller))
-        button1.pack()
-
-        button2 = ttk.Button(self, text="Close",
-                             command=quit)
-        button2.pack()
-
-
-class StopLaser(tk.Frame):
-
-    def __init__(self, parent, controller):
-        tk.Frame.__init__(self, parent)
-        label = tk.Label(self, text="Turning off laser", font=LARGE_FONT)
-        label.pack(pady=10, padx=10)
-
-        button1 = ttk.Button(self, text="Back to Home",
-                             command=lambda: controller.show_frame(StartPage))
-        button1.pack()
-
-
-class StartLaser(tk.Frame):
-
-    def __init__(self, parent, controller):
-        tk.Frame.__init__(self, parent)
-        label = tk.Label(self, text="Laser starting up...", font=LARGE_FONT)
-        label.pack(pady=10, padx=10)
-
-        button1 = ttk.Button(self, text="Back to Home",
-                             command=lambda: controller.show_frame(StartPage))
-        button1.pack()
-
-        button2 = ttk.Button(self, text="Turn off Laser",
-                             command=lambda: stop_laser(controller))
-
-        button2.pack()
-
-        canvas = FigureCanvasTkAgg(f, self)
-        canvas.draw()
-        canvas.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
-
-        toolbar = NavigationToolbar2Tk(canvas, self)
-        toolbar.update()
-        canvas._tkcanvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
 
 app = None

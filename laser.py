@@ -380,9 +380,8 @@ class Laser(ITLA):
 
         return current_interpolation
 
-    def clean_jump(self, freq):
-        """Performs a clean jump to the given frequency based on the calibration data provided."""
-
+    def clean_jump_start(self, freq):
+        """Starts clean jump. User must wait for stable frequency."""
         if freq > 196.25 or freq < 191.5:
             return
 
@@ -428,6 +427,15 @@ class Laser(ITLA):
         # Execute the jump
         logging.debug('Jump! (%d)' % self.itla_communicate(Laser.REG_Cjumpon, 1, Laser.WRITE))
 
+    def clean_jump_finish(self):
+        """Turns off clean jump mode."""
+        self.itla_communicate(ITLA.REG_Cjumpon, 0, ITLA.WRITE)
+
+    def clean_jump(self, freq):
+        """Performs a clean jump to the given frequency based on the calibration data provided."""
+
+        self.clean_jump_start(freq)
+
         # Read the frequency error and wait until it is below a threshold or 2 seconds passes
         wait_time = time.clock() + 2
 
@@ -455,7 +463,7 @@ class Laser(ITLA):
 
         print(('Laser\'s claimed frequency: %f' % claim_freq))
 
-        self.itla_communicate(ITLA.REG_Cjumpon, 0, ITLA.WRITE)
+        self.clean_jump_finish()
 
     def clean_sweep_prep(self, sweep_ghz, sweep_speed):
         """Sets up clean sweep for the laser at the given range and speed"""

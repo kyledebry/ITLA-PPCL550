@@ -64,6 +64,7 @@ class ITLA:
     REG_Csweepoffset = 0xE6  # Returns offset of clean sweep in units of 0.1 GHz with offset of 200 GHz. Offset is (
     # read-out - 2000) * 0.1 GHz. R
     REG_Cscanoffset = 0xE6
+    REG_Offset = 0xE6   # Offset for all clean operations
     REG_Csweepstop = 0xE7  # Set frequency in GHz to stop the clean sweep
     REG_Cscansled = 0xF0  # Set sled temp for clean scan. R/W ?
     REG_Csweepspeed = 0xF1  # Set clean sweep speed in MHz/sec. R/W
