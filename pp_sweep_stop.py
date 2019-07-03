@@ -28,23 +28,23 @@ laser_err = laser.laser_on(freq, logging.DEBUG)
 
         laser.clean_sweep_start()
 
-        offset_GHz = laser.clean_sweep_offset()
+        offset_GHz = laser.offset()
 
     if laser_err == Laser.NOERROR:
 
         wait_time = time.perf_counter() + 5
 
         while offset_GHz > -150 and time.perf_counter() < wait_time:
-            offset_GHz = laser.clean_sweep_offset()
+            offset_GHz = laser.offset()
             logging.info('Clean sweep offset: %d GHz' % offset_GHz)
             time.sleep(0.2)
 
     laser.clean_sweep_start()
 
-    offset_GHz = laser.clean_sweep_offset()
+    offset_GHz = laser.offset()
 
         while time.perf_counter() < wait_time + 5:
-            offset_GHz = laser.clean_sweep_offset()
+            offset_GHz = laser.offset()
             logging.info('Clean sweep offset: %d GHz' % offset_GHz)
             time.sleep(0.2)
 

@@ -488,24 +488,24 @@ class Laser(ITLA):
         # Turn on clean sweep
         logging.info('Clean sweep on: %d' % self.itla_communicate(Laser.REG_Csweepon, 1, Laser.WRITE))
 
-    def clean_sweep_offset(self):
+    def offset(self):
         assert isinstance(self, Laser)
 
-        offset_ghz = self.itla_signed_communicate(Laser.REG_Csweepoffset, 0, Laser.READ) / 10.0
+        offset_ghz = self.read(Laser.REG_Csweepoffset, signed_response=True) / 10.0
 
         return offset_ghz
 
     def clean_sweep_pause(self, offset=None):
         assert isinstance(self, Laser)
 
-        offset_1 = self.clean_sweep_offset()
+        offset_1 = self.offset()
 
         print(('Current offset: %f GHz' % offset_1))
 
-        offset_2 = self.clean_sweep_offset()
+        offset_2 = self.offset()
 
         while offset_2 == offset_1:
-            offset_2 = self.clean_sweep_offset()
+            offset_2 = self.offset()
             print(('Offset 2: %f' % offset_2))
         moving_positive = offset_2 > offset_1
 
