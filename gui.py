@@ -43,6 +43,10 @@ class Controller:
         self.clean_jump_frequency = 195
         self.clean_sweep_frequency = 50
         self.clean_sweep_speed = 20
+        self.clean_scan_start = 192
+        self.clean_scan_stop = 196
+        self.stop_clean_scan = Event()
+        self.take_scan_data = Event()
 
         self.view.navigation.button_close.add_callback(self.close)
         self.view.main_and_commands.commands.button_on.add_callback(self.laser_on)
@@ -54,6 +58,11 @@ class Controller:
             self.set_clean_sweep_frequency)
         self.view.main_and_commands.commands.speed_entry.frequency_entry.frequency.addCallback(
             self.set_clean_sweep_speed)
+        self.view.main_and_commands.commands.scan_start.frequency_entry.frequency.addCallback(self.set_scan_start_frequency)
+        self.view.main_and_commands.commands.scan_start.change_frequency(self.clean_scan_start)
+        self.view.main_and_commands.commands.scan_stop.frequency_entry.frequency.addCallback(self.set_scan_stop_frequency)
+        self.view.main_and_commands.commands.scan_stop.change_frequency(self.clean_scan_stop)
+        self.view.main_and_commands.commands.button_scan.add_callback(self.clean_scan)
 
         self.model.frequency.addCallback(self.frequency_changed)
         self.model.offset.addCallback(self.offset_changed)
@@ -62,6 +71,8 @@ class Controller:
         self.model.on.addCallback(self.state)
         self.model.connected.addCallback(self.connected)
         self.model.clean_sweep_state.addCallback(self.clean_sweep_state)
+        self.model.clean_scan_progress.addCallback(self.clean_scan_progress)
+        self.model.clean_scan_active.addCallback(self.clean_scan_state)
 
         self.model.connect_laser()
         self.model.set_startup_frequency(195)
@@ -114,6 +125,7 @@ class Controller:
             self.view.main_and_commands.commands.button_off.enable()
             self.view.main_and_commands.commands.button_jump.enable()
             self.view.main_and_commands.commands.button_sweep.enable()
+            self.view.main_and_commands.commands.button_scan.enable()
             self.progress = Controller.ProgressType.NONE
             self.progress_bar(1)
             self.view.change_status('Laser is on.')
@@ -124,6 +136,9 @@ class Controller:
         else:
             self.view.main_and_commands.commands.button_on.enable()
             self.view.main_and_commands.commands.button_off.disable()
+            self.view.main_and_commands.commands.button_scan.disable()
+            self.view.main_and_commands.commands.button_sweep.disable()
+            self.view.main_and_commands.commands.button_jump.disable()
             self.progress_bar(0)
             self.view.change_status("Laser is off.")
 
@@ -146,27 +161,33 @@ class Controller:
         if active:
             self.progress = Controller.ProgressType.OFFSET
             self.view.main_and_commands.commands.button_jump.disable()
-            self.view.change_status('Performing clean jump...')
+            self.view.main_and_commands.commands.button_scan.disable()
+            self.view.change_status('Performing frequency jump...')
         else:
             self.progress = Controller.ProgressType.NONE
             self.progress_bar(1)
             self.view.main_and_commands.commands.button_jump.enable()
-            self.view.change_status('Clean jump complete.')
+            self.view.main_and_commands.commands.button_scan.enable()
+            self.view.change_status('Frequency jump complete.')
 
     def clean_sweep(self):
         if self.progress is not Controller.ProgressType.CLEAN_SWEEP:
             self.progress = Controller.ProgressType.CLEAN_SWEEP
-            self.view.main_and_commands.commands.button_sweep.change_text("Stop Clean Sweep")
+            self.view.change_status("Performing frequency sweep...")
+            self.view.main_and_commands.commands.button_sweep.change_text("Stop Sweep")
             self.view.main_and_commands.commands.button_jump.disable()
+            self.view.main_and_commands.commands.button_scan.disable()
             clean_sweep_thread = Thread(target=self.model.clean_sweep_start,
                                         args=(self.clean_sweep_frequency, self.clean_sweep_speed))
             clean_sweep_thread.start()
         else:
             self.progress = Controller.ProgressType.NONE
-            self.view.main_and_commands.commands.button_sweep.change_text("Clean Sweep")
+            self.view.change_status("Frequency sweep stopped.")
+            self.view.main_and_commands.commands.button_sweep.change_text("Frequency Sweep")
             self.model.clean_sweep_stop()
             self.progress_bar(0)
             self.view.main_and_commands.commands.button_jump.enable()
+            self.view.main_and_commands.commands.button_scan.enable()
 
     def set_clean_sweep_frequency(self, frequency):
         self.clean_sweep_frequency = frequency
@@ -178,6 +199,54 @@ class Controller:
         if self.progress is Controller.ProgressType.CLEAN_SWEEP:
             self.view.change_status(state)
 
+    def set_scan_start_frequency(self, start):
+        self.clean_scan_start = start
+
+    def set_scan_stop_frequency(self, stop):
+        self.clean_scan_stop = stop
+
+    def clean_scan(self):
+        if self.progress is not Controller.ProgressType.CLEAN_SCAN:
+            if self.clean_scan_start == self.clean_scan_stop:
+                start = self.clean_scan_start
+                stop = start + 0.05
+            elif self.clean_scan_start > self.clean_scan_stop:
+                start = self.clean_scan_stop
+                stop = self.clean_scan_start
+            else:
+                start = self.clean_scan_start
+                stop = self.clean_scan_stop
+            self.progress = Controller.ProgressType.CLEAN_SCAN
+            self.stop_clean_scan.clear()
+            clean_scan_thread = Thread(target=self.model.clean_scan, args=(start, stop,
+                                                                           self.stop_clean_scan, self.take_scan_data))
+            clean_scan_thread.start()
+        else:
+            self.stop_clean_scan.set()
+            self.view.change_status("Stopping clean scan...")
+            self.view.main_and_commands.commands.button_scan.disable()
+
+    def clean_scan_state(self, state):
+        if state:
+            self.progress = Controller.ProgressType.CLEAN_SCAN
+            self.progress_bar(0)
+            self.view.change_status("Performing frequency scan...")
+            self.view.main_and_commands.commands.button_scan.change_text("Stop Scan")
+            self.view.main_and_commands.commands.button_jump.disable()
+            self.view.main_and_commands.commands.button_sweep.disable()
+        else:
+            self.progress = Controller.ProgressType.NONE
+            self.progress_bar(0)
+            self.view.change_status("Frequency scan complete.")
+            self.view.main_and_commands.commands.button_scan.enable()
+            self.view.main_and_commands.commands.button_jump.enable()
+            self.view.main_and_commands.commands.button_sweep.enable()
+            self.view.main_and_commands.commands.button_scan.change_text("Frequency Scan")
+
+    def clean_scan_progress(self, progress):
+        if self.progress == Controller.ProgressType.CLEAN_SCAN:
+            self.progress_bar(progress)
+
     def progress_bar(self, progress):
         self.view.change_progress(100 * progress)
 
@@ -187,6 +256,7 @@ class Controller:
         POWER = auto()
         OFFSET = auto()
         CLEAN_SWEEP = auto()
+        CLEAN_SCAN = auto()
 
 
 class Model:
@@ -197,6 +267,8 @@ class Model:
         self.on = Observable(False)
         self.connected = Observable(False)
         self.clean_jump_active = Observable(False)
+        self.clean_scan_active = Observable(False)
+        self.clean_scan_progress = Observable()
         self.clean_sweep_state = Observable()
 
         self.lock = Lock()
@@ -298,6 +370,58 @@ class Model:
         with self.lock:
             self.laser.clean_sweep_stop()
         self.clean_sweep_state.set(None)
+
+    def clean_scan(self, start_frequency: float, stop_frequency: float, stop: Event, take_data: Event):
+        assert stop_frequency > start_frequency
+        jump_frequency = start_frequency
+        self.clean_scan_active.set(True)
+        self.clean_scan_progress.set(0)
+        take_data.clear()
+
+        while jump_frequency < stop_frequency + 0.05 and not stop.is_set():
+            power_reference = self.power.get()
+
+            with self.lock:
+                self.laser.clean_jump(jump_frequency)
+
+            with self.lock:
+                self.laser.wait_nop()
+
+            time_wait = time.perf_counter() + 1
+
+            while self.power.get() < 0.8 * power_reference and time.perf_counter() < time_wait:
+                time.sleep(.1)
+
+            time.sleep(0.5)
+
+            power_reference = self.power.get()
+
+            self.clean_sweep_start(50, 20)
+            take_data.set()
+
+            while self.offset.get() > -10 and not stop.is_set():
+                time.sleep(.1)
+
+            while self.offset.get() < 1 and not stop.is_set():
+                time.sleep(0.1)
+
+            take_data.clear()
+            with self.lock:
+                self.laser.clean_sweep_stop()
+
+            with self.lock:
+                self.laser.wait_nop()
+
+            time_wait = time.perf_counter() + 5
+
+            while self.power.get() < 0.95 * power_reference and time.perf_counter() < time_wait:
+                time.sleep(.1)
+
+            jump_frequency += 0.05
+            self.clean_scan_progress.set((jump_frequency - start_frequency) / (stop_frequency - start_frequency))
+
+        time.sleep(1)
+        self.clean_scan_active.set(False)
 
 
 class View(tk.Frame):
@@ -453,7 +577,7 @@ class CommandBar(tk.Frame):
 
         full_sticky = tk.N + tk.S + tk.E + tk.W
 
-        for c in range(5):
+        for c in range(7):
             self.grid_columnconfigure(c, weight=1)
 
         self.button_on = CommandButton(self, "Laser On", None)
@@ -476,6 +600,14 @@ class CommandBar(tk.Frame):
         self.button_sweep.grid(row=1, column=2, columnspan=2, sticky=full_sticky)
         self.button_sweep.disable()
 
+        self.scan_start = FrequencyEntryAndLabel(self, "Scan start frequency (THz):")
+        self.scan_start.grid(row=0, column=4, padx=5)
+        self.scan_stop = FrequencyEntryAndLabel(self, "Scan stop frequency (THz):")
+        self.scan_stop.grid(row=0, column=5, padx=5)
+        self.button_scan = CommandButton(self, "Frequency Scan", None)
+        self.button_scan.grid(row=1, column=4, columnspan=2, sticky=full_sticky)
+        self.button_scan.disable()
+
 
 class FrequencyEntryAndLabel(tk.Frame):
     def __init__(self, parent, label, freq=195, min_freq=191.5, max_freq=196.25, *args, **kwargs):
@@ -487,6 +619,10 @@ class FrequencyEntryAndLabel(tk.Frame):
 
         self.frequency_entry = FrequencyEntry(self, freq, min_freq, max_freq)
         self.frequency_entry.pack(side="bottom", expand=True, fill="both")
+
+    def change_frequency(self, frequency):
+        self.frequency_entry.frequency.set(frequency)
+        self.frequency_entry.entry.config(text=str(frequency))
 
 
 class FrequencyEntry(tk.Frame):
