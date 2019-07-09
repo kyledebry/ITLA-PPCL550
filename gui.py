@@ -5,7 +5,11 @@ from laser import Laser
 import time
 from enum import Enum, auto
 import math
-
+import visa
+from ThorlabsPM100 import ThorlabsPM100
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.figure import Figure
+import numpy as np
 
 class Observable:
     def __init__(self, initial_value=None):
@@ -89,7 +93,7 @@ class Controller:
         self.view.main_and_commands.status.set_frequency(frequency)
 
     def offset_changed(self, offset_ghz):
-        self.view.main_and_commands.main.context.set_offset(offset_ghz)
+        self.view.main_and_commands.status.set_offset(offset_ghz)
         if self.progress == Controller.ProgressType.OFFSET:
             progress = min(1 - math.sqrt(abs(offset_ghz / 10000)), 0)
             self.progress_bar(progress)
@@ -218,9 +222,13 @@ class Controller:
                 stop = self.clean_scan_stop
             self.progress = Controller.ProgressType.CLEAN_SCAN
             self.stop_clean_scan.clear()
-            clean_scan_thread = Thread(target=self.model.clean_scan, args=(start, stop,
-                                                                           self.stop_clean_scan, self.take_scan_data))
+            self.stop_standard_update.set()
+            clean_scan_thread = Thread(target=self.model.clean_scan,
+                                       args=(start, stop, self.stop_clean_scan, self.take_scan_data))
+            scan_update_thread = Thread(target=self.model.scan_update,
+                                        args=(self.gui_lock, self.stop_clean_scan, self.take_scan_data))
             clean_scan_thread.start()
+            scan_update_thread.start()
         else:
             self.stop_clean_scan.set()
             self.view.change_status("Stopping clean scan...")
@@ -235,6 +243,7 @@ class Controller:
             self.view.main_and_commands.commands.button_jump.disable()
             self.view.main_and_commands.commands.button_sweep.disable()
         else:
+            self.stop_clean_scan.set()
             self.progress = Controller.ProgressType.NONE
             self.progress_bar(0)
             self.view.change_status("Frequency scan complete.")
@@ -274,6 +283,7 @@ class Model:
         self.lock = Lock()
 
         self.laser = None
+        self.power_meter = None
 
     def set_startup_frequency(self, frequency):
         self.frequency.set(frequency)
@@ -282,6 +292,13 @@ class Model:
         with self.lock:
             self.laser = Laser()
             self.connected.set(True)
+
+    def connect_pm(self):
+        rm = visa.ResourceManager()
+        resources = rm.list_resources()
+        inst = rm.open_resource(resources[0])
+        print(inst.query('*IDN?'))
+        self.power_meter = ThorlabsPM100(inst=inst)
 
     def laser_on(self):
         with self.lock:
@@ -317,6 +334,21 @@ class Model:
                 freq_ghz = self.laser.read(Laser.REG_FreqGHz)
                 self.frequency.set(freq_thz + freq_ghz / 10000)
                 self.offset.set(self.laser.offset())
+
+    def scan_update(self, gui_lock: Lock, end_event: Event, take_data: Event):
+        self.connect_pm()
+        while not end_event.is_set():
+            if take_data.wait(timeout=1):
+                with self.lock and gui_lock:
+                    input_power = self.laser.check_power()
+                    self.power.set(input_power)
+                    freq_thz = self.laser.read(Laser.REG_FreqTHz)
+                    freq_ghz = self.laser.read(Laser.REG_FreqGHz)
+                    frequency = freq_thz + freq_ghz / 10000
+                    offset = self.laser.offset()
+                    self.frequency.set(frequency)
+                    self.offset.set(offset)
+                    output_power = self.power_meter.read
 
     def clean_jump(self, frequency):
         self.clean_jump_active.set(True)
@@ -481,20 +513,12 @@ class Context(tk.Frame):
         tk.Frame.__init__(self, parent, *args, **kwargs)
         self.parent = parent
 
-        self.context = FrequencyContext(self)
-        self.context.pack(fill="both", expand=True)
+        self.blank = BlankContext(self)
+        self.mode_finder = GraphContext(self)
+        self.power = GraphContext(self)
 
-
-class FrequencyContext(tk.Frame):
-    def __init__(self, parent, *args, **kwargs):
-        tk.Frame.__init__(self, parent, *args, **kwargs)
-        self.parent = parent
-
-        self.offset_frequency_label = ttk.Label(text="Frequency offset: 0 GHz")
-        self.offset_frequency_label.pack(padx=20, pady=20, expand=True, fill="x")
-
-    def set_offset(self, offset_ghz):
-        self.offset_frequency_label.config(text="Frequency offset: {} GHz".format(offset_ghz))
+        # self.mode_finder.pack(fill="both", expand=True)
+        self.power.pack(fill="both", expand=True)
 
 
 class BlankContext(tk.Frame):
@@ -504,6 +528,26 @@ class BlankContext(tk.Frame):
 
         self.pack(fill="both", expand=True)
 
+
+class GraphContext(tk.Frame):
+    def __init__(self, parent, *args, **kwargs):
+        tk.Frame.__init__(self, parent, *args, **kwargs)
+        self.parent = parent
+
+        self.fig = Figure(figsize=(5, 4), dpi=100)
+        self.sub_plot = self.fig.add_subplot(111)
+        self.line, = self.sub_plot.plot([], [])
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self)
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack(side="top", fill="both", expand=True)
+
+    def plot(self, x, y):
+        if len(x) > 0:
+            self.line.set_data(x, y)
+            ax = self.canvas.figure.axes[0]
+            ax.set_xlim(x.min(), x.max())
+            ax.set_ylim(y.min(), y.max())
+            self.canvas.draw()
 
 class Status(tk.Frame):
     def __init__(self, parent, *args, **kwargs):
@@ -515,25 +559,45 @@ class Status(tk.Frame):
 
         self.status = ttk.Label(self, text="Connecting to laser...")
         self.progress_bar = ttk.Progressbar(self, length=200, value=0)
-        self.power = ttk.Label(self, text="Power: 0 dBm", style="GREY.TLabel")
-        self.frequency = ttk.Label(self, text="Frequency:", style="GREY.TLabel")
+        self.info = InfoGrid(self)
 
         self.status.pack(pady=5, padx=10, expand=True)
         self.progress_bar.pack(pady=5, padx=20, fill="x", expand=False)
-        self.power.pack(side="left", pady=5, padx=20, ipadx=25, fill="x", expand=True)
-        self.frequency.pack(side="right", pady=5, padx=20, ipadx=25, fill="x", expand=True)
+        self.info.pack(pady=5, padx=20, fill="x", expand=True)
 
     def set_power(self, power):
-        self.power.config(text="Power: {} dBm".format(power))
+        self.info.power.config(text="Power: {} dBm".format(power))
 
     def set_frequency(self, frequency):
-        self.frequency.config(text="Frequency: {} THz".format(frequency))
+        self.info.frequency.config(text="Center Frequency: {} THz".format(frequency))
+
+    def set_offset(self, offset):
+        self.info.offset.config(text="Frequency Offset: {} GHz".format(offset))
 
     def set_status(self, status):
         self.status.config(text=status)
 
     def set_progress(self, progress):
         self.progress_bar.config(value=progress)
+
+
+class InfoGrid(tk.Frame):
+    def __init__(self, parent, *args, **kwargs):
+        tk.Frame.__init__(self, parent)
+        self.parent = parent
+
+        full_sticky = tk.N + tk.S + tk.E + tk.W
+
+        for c in range(3):
+            self.grid_columnconfigure(c, weight=1)
+
+        self.power = ttk.Label(self, text="Power: 0 dBm", style="GREY.TLabel")
+        self.frequency = ttk.Label(self, text="Center Frequency:", style="GREY.TLabel")
+        self.offset = ttk.Label(self, text="Frequency Offset: 0 GHz", style="GREY.TLabel")
+
+        self.power.grid(row=0, column=0, ipadx=5, ipady=5, padx=5, sticky=full_sticky)
+        self.frequency.grid(row=0, column=1, ipadx=5, ipady=5, padx=5, sticky=full_sticky)
+        self.offset.grid(row=0, column=2, ipadx=5, ipady=5, padx=5, sticky=full_sticky)
 
 
 class NavigationBar(tk.Frame):
@@ -544,11 +608,13 @@ class NavigationBar(tk.Frame):
         self.button_home = NavigationButton(self, "Home", None)
         self.button_power = NavigationButton(self, "Power Monitor", None)
         self.button_frequency = NavigationButton(self, "Frequency Monitor", None)
+        self.button_mode_finder = NavigationButton(self, "Comb Mode Finder", None)
         self.button_close = NavigationButton(self, "Close", None)
 
         self.button_home.pack(fill="both", expand=True)
         self.button_power.pack(fill="both", expand=True)
         self.button_frequency.pack(fill="both", expand=True)
+        self.button_mode_finder.pack(fill="both", expand=True)
         self.button_close.pack(fill="both", expand=True)
 
 
