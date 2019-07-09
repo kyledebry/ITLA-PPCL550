@@ -1,5 +1,5 @@
-import mttinker as tk
-from mttkinter import ttk
+import tkinter as tk
+from tkinter import ttk
 from threading import Thread, Lock, Event
 from laser import Laser
 import time
@@ -55,6 +55,9 @@ class Controller:
         self.power_history_x = np.zeros(10)
         self.power_history_y = np.zeros(10)
 
+        self.current_update_thread = None
+        self.current_run_thread = None
+
         self.view.navigation.button_close.add_callback(self.close)
         self.view.main_and_commands.commands.button_on.add_callback(self.laser_on)
         self.view.main_and_commands.commands.button_off.add_callback(self.laser_off)
@@ -94,12 +97,12 @@ class Controller:
         if self.progress == Controller.ProgressType.POWER:
             with self.gui_lock:
                 self.progress_bar(power / 10)
-        np.roll(self.power_history_x, -1)
-        np.roll(self.power_history_y, -1)
-        self.power_history_x[-1] = time.perf_counter()
-        self.power_history_y[-1] = power
-        with self.gui_lock:
-            self.view.main_and_commands.main.power.plot(self.power_history_x, self.power_history_y)
+        # np.roll(self.power_history_x, -1)
+        # np.roll(self.power_history_y, -1)
+        # self.power_history_x[-1] = time.perf_counter()
+        # self.power_history_y[-1] = power
+        # with self.gui_lock:
+        #     self.view.main_and_commands.main.power.plot(self.power_history_x, self.power_history_y)
 
     def frequency_changed(self, frequency):
         with self.gui_lock:
@@ -129,11 +132,15 @@ class Controller:
             self.progress = Controller.ProgressType.POWER
             self.progress_bar(0)
             self.stop_standard_update.clear()
-        laser_on_thread = Thread(target=self.model.laser_on)
-        laser_on_thread.start()
+        self.current_run_thread = Thread(target=self.model.laser_on)
+        self.current_run_thread.start()
 
     def laser_off(self):
         self.stop_standard_update.set()
+        if self.current_run_thread:
+            self.current_run_thread.join()
+        # if self.current_update_thread:
+        #     self.current_update_thread.join()
         self.view.main_and_commands.commands.button_off.disable()
         self.view.change_status('Laser is off.')
         self.model.laser_off()
@@ -150,9 +157,11 @@ class Controller:
                 self.progress_bar(1)
                 self.view.change_status('Laser is on.')
 
-            laser_update_thread = Thread(target=self.model.standard_update,
-                                         args=(self.gui_lock, self.stop_standard_update))
-            laser_update_thread.start()
+            if self.current_update_thread:
+                self.current_update_thread.join()
+            self.current_update_thread = Thread(target=self.model.standard_update,
+                                                args=(self.gui_lock, self.stop_standard_update))
+            self.current_update_thread.start()
         else:
             with self.gui_lock:
                 self.view.main_and_commands.commands.button_on.enable()
@@ -175,8 +184,10 @@ class Controller:
         self.clean_jump_frequency = frequency
 
     def clean_jump(self):
-        clean_jump_thread = Thread(target=self.model.clean_jump, args=(self.clean_jump_frequency,))
-        clean_jump_thread.start()
+        if self.current_run_thread:
+            self.current_run_thread.join()
+        self.current_run_thread = Thread(target=self.model.clean_jump, args=(self.clean_jump_frequency,))
+        self.current_run_thread.start()
 
     def clean_jump_active(self, active):
         if active:
@@ -198,9 +209,10 @@ class Controller:
             self.view.main_and_commands.commands.button_sweep.change_text("Stop Sweep")
             self.view.main_and_commands.commands.button_jump.disable()
             self.view.main_and_commands.commands.button_scan.disable()
-            clean_sweep_thread = Thread(target=self.model.clean_sweep_start,
-                                        args=(self.clean_sweep_frequency, self.clean_sweep_speed))
-            clean_sweep_thread.start()
+            self.current_run_thread.join()
+            self.current_run_thread = Thread(target=self.model.clean_sweep_start,
+                                             args=(self.clean_sweep_frequency, self.clean_sweep_speed))
+            self.current_run_thread.start()
         else:
             self.progress = Controller.ProgressType.NONE
             self.view.change_status("Frequency sweep stopped.")
@@ -240,12 +252,14 @@ class Controller:
             self.progress = Controller.ProgressType.CLEAN_SCAN
             self.stop_clean_scan.clear()
             self.stop_standard_update.set()
-            clean_scan_thread = Thread(target=self.model.clean_scan,
-                                       args=(start, stop, self.stop_clean_scan, self.take_scan_data))
-            scan_update_thread = Thread(target=self.model.scan_update,
-                                        args=(self.gui_lock, self.stop_clean_scan, self.take_scan_data))
-            clean_scan_thread.start()
-            scan_update_thread.start()
+            self.current_run_thread.join()
+            self.current_update_thread.join()
+            self.current_run_thread = Thread(target=self.model.clean_scan,
+                                             args=(start, stop, self.stop_clean_scan, self.take_scan_data))
+            self.current_update_thread = Thread(target=self.model.scan_update,
+                                                args=(self.gui_lock, self.stop_clean_scan, self.take_scan_data))
+            self.current_run_thread.start()
+            self.current_update_thread.start()
         else:
             self.stop_clean_scan.set()
             self.view.change_status("Stopping clean scan...")
@@ -351,12 +365,16 @@ class Model:
 
     def standard_update(self, gui_lock: Lock, update_stop_event: Event):
         while not update_stop_event.is_set():
-            with self.lock and gui_lock:
-                self.power.set(self.laser.check_power())
-                freq_thz = self.laser.read(Laser.REG_FreqTHz)
-                freq_ghz = self.laser.read(Laser.REG_FreqGHz)
-                self.frequency.set(freq_thz + freq_ghz / 10000)
-                self.offset.set(self.laser.offset())
+            with self.lock:
+                if not update_stop_event.is_set():
+                    self.power.set(self.laser.check_power())
+                    freq_thz = self.laser.read(Laser.REG_FreqTHz)
+                    freq_ghz = self.laser.read(Laser.REG_FreqGHz)
+                    self.frequency.set(freq_thz + freq_ghz / 10000)
+                    self.offset.set(self.laser.offset())
+                    print('.', end=None)
+
+        print('Leaving standard update')
 
     def scan_update(self, gui_lock: Lock, end_event: Event, take_data: Event):
         self.connect_pm()
@@ -578,7 +596,7 @@ class GraphContext(tk.Frame):
             ax = self.canvas.figure.axes[0]
             ax.set_xlim(x.min(), x.max())
             ax.set_ylim(y.min(), y.max())
-            self.canvas.draw()
+            # self.canvas.draw()
 
 class Status(tk.Frame):
     def __init__(self, parent, *args, **kwargs):
