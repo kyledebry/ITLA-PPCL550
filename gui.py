@@ -7,8 +7,10 @@ from enum import Enum, auto
 import math
 import visa
 from ThorlabsPM100 import ThorlabsPM100
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from matplotlib.figure import Figure
+from matplotlib import pyplot as plt
+import matplotlib.animation as animation
+from matplotlib import style
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
 
 class Observable:
@@ -51,6 +53,8 @@ class Controller:
         self.clean_scan_stop = 196
         self.stop_clean_scan = Event()
         self.take_scan_data = Event()
+        self.scan_data = {'x': np.array(0), 'y': np.array(0)}
+        self.power_data = {'t': np.array(0), 'p': np.array(0)}
 
         self.view.navigation.button_close.add_callback(self.close)
         self.view.main_and_commands.commands.button_on.add_callback(self.laser_on)
@@ -77,17 +81,32 @@ class Controller:
         self.model.clean_sweep_state.addCallback(self.clean_sweep_state)
         self.model.clean_scan_progress.addCallback(self.clean_scan_progress)
         self.model.clean_scan_active.addCallback(self.clean_scan_state)
+        self.model.scan_data.addCallback(self.set_scan_data)
 
         self.model.connect_laser()
         self.model.set_startup_frequency(195)
 
         self.view.bind_all("<1>", lambda event: event.widget.focus_set())
+
+        ani = animation.FuncAnimation(self.view.main_and_commands.main.power.fig, self.animate_scan_plot, interval=100)
+
         self.view.mainloop()
+
+    def animate_scan_plot(self, i):
+        if self.progress == Controller.ProgressType.CLEAN_SCAN:
+            if self.scan_data['x'].size > 1:
+                self.view.main_and_commands.main.mode_finder.plot(self.scan_data['x'], self.scan_data['y'])
+
+        if self.power_data['t'].size > 0:
+            self.view.main_and_commands.main.power.plot(self.power_data['t'], self.power_data['p'])
 
     def power_changed(self, power):
         self.view.main_and_commands.status.set_power(round(power, 2))
         if self.progress == Controller.ProgressType.POWER:
             self.progress_bar(power / 10)
+
+        self.power_data['t'] = np.append(self.power_data['t'], np.array(time.perf_counter()))
+        self.power_data['p'] = np.append(self.power_data['p'], np.array(power))
 
     def frequency_changed(self, frequency):
         self.view.main_and_commands.status.set_frequency(frequency)
@@ -252,9 +271,18 @@ class Controller:
             self.view.main_and_commands.commands.button_sweep.enable()
             self.view.main_and_commands.commands.button_scan.change_text("Frequency Scan")
 
+            laser_update_thread = Thread(target=self.model.standard_update,
+                                         args=(self.gui_lock, self.stop_standard_update))
+            laser_update_thread.start()
+
     def clean_scan_progress(self, progress):
         if self.progress == Controller.ProgressType.CLEAN_SCAN:
             self.progress_bar(progress)
+
+    def set_scan_data(self, data):
+        # print(data)
+        self.scan_data['x'] = np.array(data['x'])
+        self.scan_data['y'] = np.array(data['y'])
 
     def progress_bar(self, progress):
         self.view.change_progress(100 * progress)
@@ -279,6 +307,7 @@ class Model:
         self.clean_scan_active = Observable(False)
         self.clean_scan_progress = Observable()
         self.clean_sweep_state = Observable()
+        self.scan_data = Observable({'x': [], 'y': []})
 
         self.lock = Lock()
 
@@ -304,7 +333,7 @@ class Model:
         with self.lock:
             self.laser.startup_begin(self.frequency.get())
 
-            while self.power.get() < 9.99:
+            while self.power.get() < 9.95:
                 self.power.set(self.laser.check_power())
 
             while self.laser.check_nop() > 16:
@@ -341,6 +370,7 @@ class Model:
             if take_data.wait(timeout=1):
                 with self.lock and gui_lock:
                     input_power = self.laser.check_power()
+                    input_power_watts = math.pow(10, input_power / 10) / 1000
                     self.power.set(input_power)
                     freq_thz = self.laser.read(Laser.REG_FreqTHz)
                     freq_ghz = self.laser.read(Laser.REG_FreqGHz)
@@ -349,6 +379,14 @@ class Model:
                     self.frequency.set(frequency)
                     self.offset.set(offset)
                     output_power = self.power_meter.read
+
+                if offset != 0 and abs(input_power - 10) < 0.1:
+                    total_frequency = frequency + offset / 1000
+                    relative_power = output_power / input_power_watts
+                    data = self.scan_data.get()
+                    data['x'].append(total_frequency)
+                    data['y'].append(relative_power)
+                    self.scan_data.set(data)
 
     def clean_jump(self, frequency):
         self.clean_jump_active.set(True)
@@ -408,6 +446,7 @@ class Model:
         jump_frequency = start_frequency
         self.clean_scan_active.set(True)
         self.clean_scan_progress.set(0)
+        self.scan_data.set({'x': [], 'y': []})
         take_data.clear()
 
         while jump_frequency < stop_frequency + 0.05 and not stop.is_set():
@@ -424,12 +463,13 @@ class Model:
             while self.power.get() < 0.8 * power_reference and time.perf_counter() < time_wait:
                 time.sleep(.1)
 
+            take_data.set()
+
             time.sleep(0.5)
 
             power_reference = self.power.get()
 
             self.clean_sweep_start(50, 20)
-            take_data.set()
 
             while self.offset.get() > -10 and not stop.is_set():
                 time.sleep(.1)
@@ -534,20 +574,21 @@ class GraphContext(tk.Frame):
         tk.Frame.__init__(self, parent, *args, **kwargs)
         self.parent = parent
 
-        self.fig = Figure(figsize=(5, 4), dpi=100)
+        self.fig = plt.Figure(figsize=(5, 4), dpi=100)
         self.sub_plot = self.fig.add_subplot(111)
-        self.line, = self.sub_plot.plot([], [])
+        self.line, = self.sub_plot.plot([], [], 'o')
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(side="top", fill="both", expand=True)
 
     def plot(self, x, y):
-        if len(x) > 0:
-            self.line.set_data(x, y)
-            ax = self.canvas.figure.axes[0]
-            ax.set_xlim(x.min(), x.max())
-            ax.set_ylim(y.min(), y.max())
-            self.canvas.draw()
+        if isinstance(x, np.ndarray):
+            if x.size > 0:
+                self.line.set_data(x, y)
+                ax = self.canvas.figure.axes[0]
+                ax.set_xlim(x.min(), x.max())
+                ax.set_ylim(y.min(), y.max())
+
 
 class Status(tk.Frame):
     def __init__(self, parent, *args, **kwargs):
