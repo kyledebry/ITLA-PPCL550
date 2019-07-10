@@ -53,8 +53,8 @@ class Controller:
         self.clean_scan_stop = 196
         self.stop_clean_scan = Event()
         self.take_scan_data = Event()
-        self.scan_data = {'x': np.array(0), 'y': np.array(0)}
-        self.power_data = {'t': np.array(0), 'p': np.array(0)}
+        self.scan_data = {'x': [], 'y': []}
+        self.power_data = {'t': [], 'p': []}
 
         self.view.navigation.button_close.add_callback(self.close)
         self.view.main_and_commands.commands.button_on.add_callback(self.laser_on)
@@ -71,6 +71,8 @@ class Controller:
         self.view.main_and_commands.commands.scan_stop.frequency_entry.frequency.addCallback(self.set_scan_stop_frequency)
         self.view.main_and_commands.commands.scan_stop.change_frequency(self.clean_scan_stop)
         self.view.main_and_commands.commands.button_scan.add_callback(self.clean_scan)
+        self.view.navigation.button_power.add_callback(self.go_to_power_monitor)
+        self.view.navigation.button_mode_finder.add_callback(self.go_to_scan_monitor)
 
         self.model.frequency.addCallback(self.frequency_changed)
         self.model.offset.addCallback(self.offset_changed)
@@ -88,25 +90,29 @@ class Controller:
 
         self.view.bind_all("<1>", lambda event: event.widget.focus_set())
 
-        ani = animation.FuncAnimation(self.view.main_and_commands.main.power.fig, self.animate_scan_plot, interval=100)
+        self.scan_plot_animation = animation.FuncAnimation(self.view.main_and_commands.main.mode_finder.fig, self.animate_power_plot, interval=100)
+        self.power_plot_animation = animation.FuncAnimation(self.view.main_and_commands.main.power.fig, self.animate_scan_plot, interval=100)
+        self.go_to_power_monitor()
 
         self.view.mainloop()
 
     def animate_scan_plot(self, i):
         if self.progress == Controller.ProgressType.CLEAN_SCAN:
-            if self.scan_data['x'].size > 1:
+            if len(self.scan_data['x']) > 1:
                 self.view.main_and_commands.main.mode_finder.plot(self.scan_data['x'], self.scan_data['y'])
 
-        if self.power_data['t'].size > 0:
-            self.view.main_and_commands.main.power.plot(self.power_data['t'], self.power_data['p'])
+    def animate_power_plot(self, i):
+        if len(self.power_data['t']) > 1:
+            self.view.main_and_commands.main.power.plot(np.array(self.power_data['t']), np.array(self.power_data['p']),
+                                                        max_x_width=30)
 
     def power_changed(self, power):
         self.view.main_and_commands.status.set_power(round(power, 2))
         if self.progress == Controller.ProgressType.POWER:
             self.progress_bar(power / 10)
 
-        self.power_data['t'] = np.append(self.power_data['t'], np.array(time.perf_counter()))
-        self.power_data['p'] = np.append(self.power_data['p'], np.array(power))
+        self.power_data['t'].append(time.perf_counter())
+        self.power_data['p'].append(power)
 
     def frequency_changed(self, frequency):
         self.view.main_and_commands.status.set_frequency(frequency)
@@ -172,6 +178,16 @@ class Controller:
                 self.progress_bar(1)
         else:
             self.view.change_status('Laser not connected')
+
+    def go_to_power_monitor(self):
+        self.view.main_and_commands.main.power.switch_to()
+        self.view.navigation.button_mode_finder.enable()
+        self.view.navigation.button_power.disable()
+
+    def go_to_scan_monitor(self):
+        self.view.main_and_commands.main.mode_finder.switch_to()
+        self.view.navigation.button_mode_finder.disable()
+        self.view.navigation.button_power.enable()
 
     def set_clean_jump(self, frequency):
         self.clean_jump_frequency = frequency
@@ -261,6 +277,7 @@ class Controller:
             self.view.main_and_commands.commands.button_scan.change_text("Stop Scan")
             self.view.main_and_commands.commands.button_jump.disable()
             self.view.main_and_commands.commands.button_sweep.disable()
+            self.go_to_scan_monitor()
         else:
             self.stop_clean_scan.set()
             self.progress = Controller.ProgressType.NONE
@@ -270,7 +287,7 @@ class Controller:
             self.view.main_and_commands.commands.button_jump.enable()
             self.view.main_and_commands.commands.button_sweep.enable()
             self.view.main_and_commands.commands.button_scan.change_text("Frequency Scan")
-
+            self.stop_standard_update.clear()
             laser_update_thread = Thread(target=self.model.standard_update,
                                          args=(self.gui_lock, self.stop_standard_update))
             laser_update_thread.start()
@@ -313,6 +330,8 @@ class Model:
 
         self.laser = None
         self.power_meter = None
+        self.power_meter_connected = Event()
+        self.power_meter_connected.clear()
 
     def set_startup_frequency(self, frequency):
         self.frequency.set(frequency)
@@ -328,6 +347,7 @@ class Model:
         inst = rm.open_resource(resources[0])
         print(inst.query('*IDN?'))
         self.power_meter = ThorlabsPM100(inst=inst)
+        self.power_meter_connected.set()
 
     def laser_on(self):
         with self.lock:
@@ -337,10 +357,8 @@ class Model:
                 self.power.set(self.laser.check_power())
 
             while self.laser.check_nop() > 16:
-                time.sleep(0.001)
+                self.power.set(self.laser.check_power())
 
-            self.laser.startup_finish()
-            self.power.set(self.laser.check_power())
             self.on.set(True)
 
     def laser_off(self):
@@ -365,22 +383,21 @@ class Model:
                 self.offset.set(self.laser.offset())
 
     def scan_update(self, gui_lock: Lock, end_event: Event, take_data: Event):
-        self.connect_pm()
+        self.power_meter_connected.wait()
         while not end_event.is_set():
-            if take_data.wait(timeout=1):
-                with self.lock and gui_lock:
-                    input_power = self.laser.check_power()
-                    input_power_watts = math.pow(10, input_power / 10) / 1000
-                    self.power.set(input_power)
-                    freq_thz = self.laser.read(Laser.REG_FreqTHz)
-                    freq_ghz = self.laser.read(Laser.REG_FreqGHz)
-                    frequency = freq_thz + freq_ghz / 10000
-                    offset = self.laser.offset()
-                    self.frequency.set(frequency)
-                    self.offset.set(offset)
-                    output_power = self.power_meter.read
+            with self.lock and gui_lock:
+                input_power = self.laser.check_power()
+                input_power_watts = math.pow(10, input_power / 10) / 1000
+                self.power.set(input_power)
+                freq_thz = self.laser.read(Laser.REG_FreqTHz)
+                freq_ghz = self.laser.read(Laser.REG_FreqGHz)
+                frequency = freq_thz + freq_ghz / 10000
+                offset = self.laser.offset()
+                self.frequency.set(frequency)
+                self.offset.set(offset)
+                output_power = self.power_meter.read
 
-                if offset != 0 and abs(input_power - 10) < 0.1:
+                if offset != 0 and abs(input_power - 10) < 0.05 and take_data.is_set():
                     total_frequency = frequency + offset / 1000
                     relative_power = output_power / input_power_watts
                     data = self.scan_data.get()
@@ -443,6 +460,8 @@ class Model:
 
     def clean_scan(self, start_frequency: float, stop_frequency: float, stop: Event, take_data: Event):
         assert stop_frequency > start_frequency
+        if not self.power_meter_connected.is_set():
+            self.connect_pm()
         jump_frequency = start_frequency
         self.clean_scan_active.set(True)
         self.clean_scan_progress.set(0)
@@ -553,12 +572,20 @@ class Context(tk.Frame):
         tk.Frame.__init__(self, parent, *args, **kwargs)
         self.parent = parent
 
-        self.blank = BlankContext(self)
-        self.mode_finder = GraphContext(self)
-        self.power = GraphContext(self)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
 
-        # self.mode_finder.pack(fill="both", expand=True)
-        self.power.pack(fill="both", expand=True)
+        self.mode_finder = GraphContext(self)
+        self.mode_finder.title("Mode Finder")
+        self.mode_finder.label("Frequency (THz)", "Optical Transmission")
+        self.power = GraphContext(self)
+        self.power.title("Output Power")
+        self.power.label("Time (s)", "Output Power (dBm)")
+
+        self.mode_finder.grid(row=0, column=0, sticky="NSWE")
+        self.power.grid(row=0, column=0, sticky="NSWE")
+
+        self.power.switch_to()
 
 
 class BlankContext(tk.Frame):
@@ -576,18 +603,43 @@ class GraphContext(tk.Frame):
 
         self.fig = plt.Figure(figsize=(5, 4), dpi=100)
         self.sub_plot = self.fig.add_subplot(111)
-        self.line, = self.sub_plot.plot([], [], 'o')
+        self.line, = self.sub_plot.plot([], [], 'o', markersize=2)
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(side="top", fill="both", expand=True)
+        self.ax = self.canvas.figure.axes[0]
+        self.ax.set_xlim(0, 1)
+        self.ax.set_ylim(0, 1)
 
-    def plot(self, x, y):
+    def switch_to(self):
+        self.tkraise()
+
+    def title(self, title):
+        self.ax.set_title(title)
+
+    def label(self, x_label, y_label):
+        self.ax.set_xlabel(x_label)
+        self.ax.set_ylabel(y_label)
+
+    def plot(self, x, y, max_x_width=None):
         if isinstance(x, np.ndarray):
-            if x.size > 0:
+            if x.size > 1:
                 self.line.set_data(x, y)
                 ax = self.canvas.figure.axes[0]
-                ax.set_xlim(x.min(), x.max())
-                ax.set_ylim(y.min(), y.max())
+                if max_x_width:
+                    x_min = max(x.max() - max_x_width, x.min())
+                else:
+                    x_min = x.min()
+
+                x_width = x.max() - x_min
+
+                ax.set_xlim(x_min - x_width / 20, x.max() + x_width / 20)
+                ax.set_ylim(0.8 * y.min(), max(1.2 * y.max(), .1))
+            else:
+                self.line.set_data([], [])
+                ax = self.canvas.figure.axes[0]
+                ax.set_xlim(0, 1)
+                ax.set_ylim(0, 1)
 
 
 class Status(tk.Frame):
@@ -630,15 +682,21 @@ class InfoGrid(tk.Frame):
         full_sticky = tk.N + tk.S + tk.E + tk.W
 
         for c in range(3):
-            self.grid_columnconfigure(c, weight=1)
+            self.grid_columnconfigure(c + 1, weight=0, pad=20, minsize=200)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(4, weight=1)
 
-        self.power = ttk.Label(self, text="Power: 0 dBm", style="GREY.TLabel")
-        self.frequency = ttk.Label(self, text="Center Frequency:", style="GREY.TLabel")
-        self.offset = ttk.Label(self, text="Frequency Offset: 0 GHz", style="GREY.TLabel")
+        self.pad_left = ttk.Label(self, text=" ", style="GREY.TLabel")
+        self.power = ttk.Label(self, text="Power: 0 dBm", style="GREY.TLabel", anchor="center")
+        self.frequency = ttk.Label(self, text="Center Frequency:", style="GREY.TLabel", anchor="center")
+        self.offset = ttk.Label(self, text="Frequency Offset: 0 GHz", style="GREY.TLabel", anchor="center")
+        self.pad_right = ttk.Label(self, text=" ", style="GREY.TLabel", anchor="center")
 
-        self.power.grid(row=0, column=0, ipadx=5, ipady=5, padx=5, sticky=full_sticky)
-        self.frequency.grid(row=0, column=1, ipadx=5, ipady=5, padx=5, sticky=full_sticky)
-        self.offset.grid(row=0, column=2, ipadx=5, ipady=5, padx=5, sticky=full_sticky)
+        self.pad_left.grid(row=0, column=0, ipadx=5, ipady=5, padx=5, sticky=full_sticky)
+        self.power.grid(row=0, column=1, ipadx=5, ipady=5, padx=5, sticky=full_sticky)
+        self.frequency.grid(row=0, column=2, ipadx=5, ipady=5, padx=5, sticky=full_sticky)
+        self.offset.grid(row=0, column=3, ipadx=5, ipady=5, padx=5, sticky=full_sticky)
+        self.pad_right.grid(row=0, column=4, ipadx=5, ipady=5, padx=5, sticky=full_sticky)
 
 
 class NavigationBar(tk.Frame):
@@ -646,15 +704,15 @@ class NavigationBar(tk.Frame):
         tk.Frame.__init__(self, parent)
         self.parent = parent
 
-        self.button_home = NavigationButton(self, "Home", None)
+        # self.button_home = NavigationButton(self, "Home", None)
         self.button_power = NavigationButton(self, "Power Monitor", None)
-        self.button_frequency = NavigationButton(self, "Frequency Monitor", None)
+        # self.button_frequency = NavigationButton(self, "Frequency Monitor", None)
         self.button_mode_finder = NavigationButton(self, "Comb Mode Finder", None)
         self.button_close = NavigationButton(self, "Close", None)
 
-        self.button_home.pack(fill="both", expand=True)
+        # self.button_home.pack(fill="both", expand=True)
         self.button_power.pack(fill="both", expand=True)
-        self.button_frequency.pack(fill="both", expand=True)
+        # self.button_frequency.pack(fill="both", expand=True)
         self.button_mode_finder.pack(fill="both", expand=True)
         self.button_close.pack(fill="both", expand=True)
 
@@ -693,7 +751,7 @@ class CommandBar(tk.Frame):
         self.button_off.grid(row=1, column=0, sticky=full_sticky)
         self.button_off.disable()
 
-        self.jump_entry = FrequencyEntryAndLabel(self, "Jump frequency (THz):")
+        self.jump_entry = FrequencyEntryAndLabel(self, "Jump frequency (THz):", 195, 191.5, 196.25)
         self.jump_entry.grid(row=0, column=1, padx=5)
         self.button_jump = CommandButton(self, "Frequency Jump", None)
         self.button_jump.grid(row=1, column=1, sticky=full_sticky)
@@ -707,9 +765,9 @@ class CommandBar(tk.Frame):
         self.button_sweep.grid(row=1, column=2, columnspan=2, sticky=full_sticky)
         self.button_sweep.disable()
 
-        self.scan_start = FrequencyEntryAndLabel(self, "Scan start frequency (THz):")
+        self.scan_start = FrequencyEntryAndLabel(self, "Scan start frequency (THz):", 192)
         self.scan_start.grid(row=0, column=4, padx=5)
-        self.scan_stop = FrequencyEntryAndLabel(self, "Scan stop frequency (THz):")
+        self.scan_stop = FrequencyEntryAndLabel(self, "Scan stop frequency (THz):", 196)
         self.scan_stop.grid(row=0, column=5, padx=5)
         self.button_scan = CommandButton(self, "Frequency Scan", None)
         self.button_scan.grid(row=1, column=4, columnspan=2, sticky=full_sticky)
@@ -746,7 +804,8 @@ class FrequencyEntry(tk.Frame):
         self.max_freq = max_freq
         self.frequency = Observable(freq)
 
-        self.entry.insert(0, str(self.frequency.get()))
+        self.entry.delete(0, 'end')
+        self.entry.insert(0, str(float(self.frequency.get())))
 
     def value(self):
         return self.entry.get()
