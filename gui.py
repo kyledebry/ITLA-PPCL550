@@ -1,4 +1,6 @@
+import datetime
 import tkinter as tk
+from queue import Queue
 from tkinter import ttk
 from threading import Thread, Lock, Event
 from laser import Laser
@@ -12,6 +14,8 @@ import matplotlib.animation as animation
 from matplotlib import style
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
+import scipy.interpolate
+
 
 class Observable:
     def __init__(self, initial_value=None):
@@ -51,9 +55,10 @@ class Controller:
         self.clean_sweep_speed = 20
         self.clean_scan_start = 192
         self.clean_scan_stop = 196
+        self.clean_scan_speed = 10
         self.stop_clean_scan = Event()
         self.take_scan_data = Event()
-        self.scan_data = {'x': [], 'y': []}
+        self.scan_data = {'x': np.array([]), 'y': np.array([])}
         self.power_data = {'t': [], 'p': []}
 
         self.view.navigation.button_close.add_callback(self.close)
@@ -70,6 +75,8 @@ class Controller:
         self.view.main_and_commands.commands.scan_start.change_frequency(self.clean_scan_start)
         self.view.main_and_commands.commands.scan_stop.frequency_entry.frequency.addCallback(self.set_scan_stop_frequency)
         self.view.main_and_commands.commands.scan_stop.change_frequency(self.clean_scan_stop)
+        self.view.main_and_commands.commands.scan_speed_entry.frequency_entry.frequency.addCallback(
+            self.set_clean_scan_speed)
         self.view.main_and_commands.commands.button_scan.add_callback(self.clean_scan)
         self.view.navigation.button_power.add_callback(self.go_to_power_monitor)
         self.view.navigation.button_mode_finder.add_callback(self.go_to_scan_monitor)
@@ -84,6 +91,8 @@ class Controller:
         self.model.clean_scan_progress.addCallback(self.clean_scan_progress)
         self.model.clean_scan_active.addCallback(self.clean_scan_state)
         self.model.scan_data.addCallback(self.set_scan_data)
+        self.model.scan_data_old.addCallback(self.set_scan_data_old)
+        self.model.scan_time_remaining.addCallback(self.scan_time_remaining)
 
         self.model.connect_laser()
         self.model.set_startup_frequency(195)
@@ -98,8 +107,10 @@ class Controller:
 
     def animate_scan_plot(self, i):
         if self.progress == Controller.ProgressType.CLEAN_SCAN:
-            if len(self.scan_data['x']) > 1:
-                self.view.main_and_commands.main.mode_finder.plot(self.scan_data['x'], self.scan_data['y'])
+            if self.scan_data['x'].size > 1:
+                x = self.scan_data['x']
+                y = self.scan_data['y']
+                self.view.main_and_commands.main.mode_finder.plot(x, y)
 
     def animate_power_plot(self, i):
         if len(self.power_data['t']) > 1:
@@ -130,6 +141,7 @@ class Controller:
         self.model.disconnect()
 
     def close(self):
+        self.stop_standard_update.set()
         self.disconnect_laser()
         quit()
 
@@ -144,7 +156,7 @@ class Controller:
 
     def laser_off(self):
         self.stop_standard_update.set()
-        self.view.main_and_commands.commands.button_off.disable()
+        self.view.main_and_commands.commands.button_off.enable()
         self.view.change_status('Laser is off.')
         self.model.laser_off()
 
@@ -164,7 +176,7 @@ class Controller:
             laser_update_thread.start()
         else:
             self.view.main_and_commands.commands.button_on.enable()
-            self.view.main_and_commands.commands.button_off.disable()
+            self.view.main_and_commands.commands.button_off.enable()
             self.view.main_and_commands.commands.button_scan.disable()
             self.view.main_and_commands.commands.button_sweep.disable()
             self.view.main_and_commands.commands.button_jump.disable()
@@ -244,6 +256,9 @@ class Controller:
     def set_scan_stop_frequency(self, stop):
         self.clean_scan_stop = stop
 
+    def set_clean_scan_speed(self, speed):
+        self.clean_scan_speed = speed
+
     def clean_scan(self):
         if self.progress is not Controller.ProgressType.CLEAN_SCAN:
             if self.clean_scan_start == self.clean_scan_stop:
@@ -256,21 +271,26 @@ class Controller:
                 start = self.clean_scan_start
                 stop = self.clean_scan_stop
             self.progress = Controller.ProgressType.CLEAN_SCAN
+            self.view.change_status("Starting scan...")
+            self.view.main_and_commands.commands.button_scan.disable()
+            self.view.main_and_commands.commands.button_jump.disable()
+            self.view.main_and_commands.commands.button_sweep.disable()
             self.stop_clean_scan.clear()
-            self.stop_standard_update.set()
             clean_scan_thread = Thread(target=self.model.clean_scan,
-                                       args=(start, stop, self.stop_clean_scan, self.take_scan_data))
+                                       args=(start, stop, self.clean_scan_speed,
+                                             self.stop_clean_scan, self.take_scan_data))
             scan_update_thread = Thread(target=self.model.scan_update,
-                                        args=(self.gui_lock, self.stop_clean_scan, self.take_scan_data))
+                                        args=(self.stop_clean_scan, self.take_scan_data))
             clean_scan_thread.start()
             scan_update_thread.start()
         else:
             self.stop_clean_scan.set()
-            self.view.change_status("Stopping clean scan...")
+            self.view.change_status("Stopping scan...")
             self.view.main_and_commands.commands.button_scan.disable()
 
     def clean_scan_state(self, state):
         if state:
+            self.stop_standard_update.set()
             self.progress = Controller.ProgressType.CLEAN_SCAN
             self.progress_bar(0)
             self.view.change_status("Performing frequency scan...")
@@ -292,14 +312,38 @@ class Controller:
                                          args=(self.gui_lock, self.stop_standard_update))
             laser_update_thread.start()
 
+            current_date_time = datetime.datetime.now()
+
+            dt = current_date_time.strftime("%Y-%m-%d_%H-%M-%S")
+
+            with open("scan_transmission_{}.csv".format(dt), "w") as fp:
+                for freq, transmission in zip(self.scan_data['x'], self.scan_data['y']):
+                    fp.write(str(freq) + ',' + str(transmission) + '\n')
+
     def clean_scan_progress(self, progress):
         if self.progress == Controller.ProgressType.CLEAN_SCAN:
             self.progress_bar(progress)
 
     def set_scan_data(self, data):
         # print(data)
-        self.scan_data['x'] = np.array(data['x'])
-        self.scan_data['y'] = np.array(data['y'])
+        if len(data['f']) > 5 and len(data['p_out']) > 5:
+            f = scipy.interpolate.interp1d(data['t_laser'], data['f'], kind='cubic', fill_value="extrapolate")(np.array(data['t_pm']))
+            p_in = scipy.interpolate.interp1d(data['t_laser'], data['p_in'], kind='cubic', fill_value="extrapolate")(np.array(data['t_pm']))
+            p_out = np.array(data['p_out'])
+            p_rel = p_out / p_in
+
+            self.scan_data['x'] = f
+            self.scan_data['y'] = p_rel
+
+    def set_scan_data_old(self, data):
+        # print(data)
+        if len(data['f']) > 5:
+            self.scan_data['x'] = np.array(data['f'])
+            self.scan_data['y'] = np.array(data['t'])
+
+    def scan_time_remaining(self, time_remaining):
+        if self.progress == Controller.ProgressType.CLEAN_SCAN and isinstance(time_remaining, int):
+            self.view.change_status("Performing frequency scan ({} minutes remaining)...".format(time_remaining))
 
     def progress_bar(self, progress):
         self.view.change_progress(100 * progress)
@@ -324,14 +368,19 @@ class Model:
         self.clean_scan_active = Observable(False)
         self.clean_scan_progress = Observable()
         self.clean_sweep_state = Observable()
-        self.scan_data = Observable({'x': [], 'y': []})
+        self.scan_data = Observable({'t_laser': [], 'f': [], 'p_in': [], 't_pm': [], 'p_out': []})
+        self.scan_data_old = Observable({'f': [], 't': []})
+        self.scan_time_remaining = Observable()
 
         self.lock = Lock()
+        self.data_lock = Lock()
 
         self.laser = None
         self.power_meter = None
         self.power_meter_connected = Event()
         self.power_meter_connected.clear()
+        self.power_meter_thread = None
+        self.power_meter_stop = Event()
 
     def set_startup_frequency(self, frequency):
         self.frequency.set(frequency)
@@ -352,9 +401,6 @@ class Model:
     def laser_on(self):
         with self.lock:
             self.laser.startup_begin(self.frequency.get())
-
-            while self.power.get() < 9.95:
-                self.power.set(self.laser.check_power())
 
             while self.laser.check_nop() > 16:
                 self.power.set(self.laser.check_power())
@@ -382,28 +428,77 @@ class Model:
                 self.frequency.set(freq_thz + freq_ghz / 10000)
                 self.offset.set(self.laser.offset())
 
-    def scan_update(self, gui_lock: Lock, end_event: Event, take_data: Event):
+    def scan_update(self, end_event: Event, take_data: Event):
+        self.power_meter_connected.wait()
+
+        t_prev = None
+        p_prev = None
+        f_prev = None
+
+        while not end_event.is_set():
+            queue = Queue(maxsize=1)
+            laser_read_thread = Thread(target=self.laser_read, args=(queue, ))
+            laser_read_thread.start()
+            output_powers_list = []
+            measured_time_list = []
+            while laser_read_thread.is_alive():
+                output_powers_list.append(self.power_meter.read)
+                measured_time_list.append(time.perf_counter())
+            laser_read_thread.join()
+
+            output_powers_list.append(self.power_meter.read)
+            measured_time_list.append(time.perf_counter())
+
+            output_powers = np.array(output_powers_list)
+            measured_time = np.array(measured_time_list)
+
+            p_new, offset, t_end = queue.get()
+            self.power.set(p_new)
+            self.offset.set(offset)
+            f_new = self.frequency.get() + offset / 1000
+
+            if t_prev and f_prev and p_prev:
+                assert isinstance(f_prev, float)
+                assert isinstance(p_prev, float)
+
+                t_duration = t_end - t_prev
+                interpolation = ((measured_time - t_prev) / t_duration)
+                frequencies = list(interpolation * f_new + (1 - interpolation) * f_prev)
+                input_powers = interpolation * p_new + (1 - interpolation) * p_prev
+                input_powers_watts = np.power(10, input_powers / 10) / 1000
+                relative_powers = list(output_powers / input_powers_watts)
+
+                if abs(offset) < 20 and abs(p_new - 10) < 0.03 and abs(f_prev - f_new) < 0.1 and take_data.is_set():
+                    with self.data_lock:
+                        data = self.scan_data_old.get()
+                        data['f'] += frequencies
+                        data['t'] += relative_powers
+                        self.scan_data_old.set(data)
+
+            t_prev = t_end
+            f_prev = f_new
+            p_prev = p_new
+
+    def laser_read(self, queue: Queue):
+        with self.lock:
+            input_power = self.laser.check_power()
+            offset = self.laser.offset()
+            t = time.perf_counter()
+        results = input_power, offset, t
+
+        queue.put(results)
+
+    def pm_update(self, end_event: Event, take_data: Event):
         self.power_meter_connected.wait()
         while not end_event.is_set():
-            with self.lock and gui_lock:
-                input_power = self.laser.check_power()
-                input_power_watts = math.pow(10, input_power / 10) / 1000
-                self.power.set(input_power)
-                freq_thz = self.laser.read(Laser.REG_FreqTHz)
-                freq_ghz = self.laser.read(Laser.REG_FreqGHz)
-                frequency = freq_thz + freq_ghz / 10000
-                offset = self.laser.offset()
-                self.frequency.set(frequency)
-                self.offset.set(offset)
-                output_power = self.power_meter.read
-
-                if offset != 0 and abs(input_power - 10) < 0.05 and take_data.is_set():
-                    total_frequency = frequency + offset / 1000
-                    relative_power = output_power / input_power_watts
+            if take_data.is_set():
+                power_out = self.power_meter.read
+                with self.data_lock:
                     data = self.scan_data.get()
-                    data['x'].append(total_frequency)
-                    data['y'].append(relative_power)
-                    self.scan_data.set(data)
+                    if len(data['t_laser']) > 1 and abs(data['t_laser'][-1] - time.perf_counter()) < 2E-1:
+                        data['t_pm'].append(time.perf_counter())
+                        data['p_out'].append(power_out)
+                        self.scan_data.set(data)
 
     def clean_jump(self, frequency):
         self.clean_jump_active.set(True)
@@ -458,21 +553,31 @@ class Model:
             self.laser.clean_sweep_stop()
         self.clean_sweep_state.set(None)
 
-    def clean_scan(self, start_frequency: float, stop_frequency: float, stop: Event, take_data: Event):
+    def clean_scan(self, start_frequency: float, stop_frequency: float, speed: float, stop: Event, take_data: Event):
         assert stop_frequency > start_frequency
         if not self.power_meter_connected.is_set():
             self.connect_pm()
         jump_frequency = start_frequency
         self.clean_scan_active.set(True)
         self.clean_scan_progress.set(0)
-        self.scan_data.set({'x': [], 'y': []})
+        self.scan_data.set({'t_laser': [], 'f': [], 'p_in': [], 't_pm': [], 'p_out': []})
+        self.scan_data_old.set({'f': [], 't': []})
         take_data.clear()
+        # self.power_meter_thread = Thread(target=self.pm_update, args=(stop, take_data))
+        # self.power_meter_thread.start()
 
-        while jump_frequency < stop_frequency + 0.05 and not stop.is_set():
+        scan_start_time = time.perf_counter()
+        scan_count = 0
+
+        while jump_frequency < stop_frequency + 0.03 and not stop.is_set():
             power_reference = self.power.get()
 
             with self.lock:
                 self.laser.clean_jump(jump_frequency)
+                freq_thz = self.laser.read(Laser.REG_FreqTHz)
+                freq_ghz = self.laser.read(Laser.REG_FreqGHz)
+                frequency = freq_thz + freq_ghz / 10000
+                self.frequency.set(frequency)
 
             with self.lock:
                 self.laser.wait_nop()
@@ -482,21 +587,29 @@ class Model:
             while self.power.get() < 0.8 * power_reference and time.perf_counter() < time_wait:
                 time.sleep(.1)
 
-            take_data.set()
-
             time.sleep(0.5)
 
             power_reference = self.power.get()
 
-            self.clean_sweep_start(50, 20)
+            self.clean_sweep_start(50, speed)
+
+            time.sleep(.1)
+
+            take_data.set()
+
+            while self.offset.get() < 10 and not stop.is_set():
+                time.sleep(.1)
 
             while self.offset.get() > -10 and not stop.is_set():
                 time.sleep(.1)
 
-            while self.offset.get() < 1 and not stop.is_set():
+            while self.offset.get() < -1 and not stop.is_set():
                 time.sleep(0.1)
 
             take_data.clear()
+
+            time.sleep(0.5)
+
             with self.lock:
                 self.laser.clean_sweep_stop()
 
@@ -508,10 +621,16 @@ class Model:
             while self.power.get() < 0.95 * power_reference and time.perf_counter() < time_wait:
                 time.sleep(.1)
 
-            jump_frequency += 0.05
+            jump_frequency += 0.04
+            progress = (jump_frequency - start_frequency) / (stop_frequency - start_frequency)
             self.clean_scan_progress.set((jump_frequency - start_frequency) / (stop_frequency - start_frequency))
+            time_elapsed = time.perf_counter() - scan_start_time
+            scan_count += 1
+            average_time_elapsed = time_elapsed / scan_count
+            self.scan_time_remaining.set(round(average_time_elapsed / progress / 60))
 
         time.sleep(1)
+        # self.power_meter_thread.join()
         self.clean_scan_active.set(False)
 
 
@@ -603,7 +722,7 @@ class GraphContext(tk.Frame):
 
         self.fig = plt.Figure(figsize=(5, 4), dpi=100)
         self.sub_plot = self.fig.add_subplot(111)
-        self.line, = self.sub_plot.plot([], [], 'o', markersize=2)
+        self.line, = self.sub_plot.plot([], [], 'o', markersize=1)
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(side="top", fill="both", expand=True)
@@ -634,7 +753,7 @@ class GraphContext(tk.Frame):
                 x_width = x.max() - x_min
 
                 ax.set_xlim(x_min - x_width / 20, x.max() + x_width / 20)
-                ax.set_ylim(0.8 * y.min(), max(1.2 * y.max(), .1))
+                ax.set_ylim(0.8 * y.min(), max(1.2 * y.max(), 1E-7))
             else:
                 self.line.set_data([], [])
                 ax = self.canvas.figure.axes[0]
@@ -749,7 +868,7 @@ class CommandBar(tk.Frame):
         self.button_on.grid(row=0, column=0, sticky=full_sticky)
         self.button_off = CommandButton(self, "Laser Off", None)
         self.button_off.grid(row=1, column=0, sticky=full_sticky)
-        self.button_off.disable()
+        self.button_off.enable()
 
         self.jump_entry = FrequencyEntryAndLabel(self, "Jump frequency (THz):", 195, 191.5, 196.25)
         self.jump_entry.grid(row=0, column=1, padx=5)
@@ -757,9 +876,9 @@ class CommandBar(tk.Frame):
         self.button_jump.grid(row=1, column=1, sticky=full_sticky)
         self.button_jump.disable()
 
-        self.sweep_entry = FrequencyEntryAndLabel(self, "Sweep range (GHz)", 50, 0, 50)
+        self.sweep_entry = FrequencyEntryAndLabel(self, "Sweep range (GHz):", 50, 0.1, 50)
         self.sweep_entry.grid(row=0, column=2, padx=5)
-        self.speed_entry = FrequencyEntryAndLabel(self, "Sweep speed (GHz/sec)", 20, 0, 50)
+        self.speed_entry = FrequencyEntryAndLabel(self, "Sweep speed (GHz/sec):", 20, 0.1, 50)
         self.speed_entry.grid(row=0, column=3, padx=5)
         self.button_sweep = CommandButton(self, "Frequency Sweep", None)
         self.button_sweep.grid(row=1, column=2, columnspan=2, sticky=full_sticky)
@@ -769,8 +888,10 @@ class CommandBar(tk.Frame):
         self.scan_start.grid(row=0, column=4, padx=5)
         self.scan_stop = FrequencyEntryAndLabel(self, "Scan stop frequency (THz):", 196)
         self.scan_stop.grid(row=0, column=5, padx=5)
+        self.scan_speed_entry = FrequencyEntryAndLabel(self, "Scan speed (GHz/sec):", 10, 1, 25)
+        self.scan_speed_entry.grid(row=0, column=6, padx=5)
         self.button_scan = CommandButton(self, "Frequency Scan", None)
-        self.button_scan.grid(row=1, column=4, columnspan=2, sticky=full_sticky)
+        self.button_scan.grid(row=1, column=4, columnspan=3, sticky=full_sticky)
         self.button_scan.disable()
 
 
@@ -816,7 +937,7 @@ class FrequencyEntry(tk.Frame):
             try:
                 value_float = float(value_if_allowed)
 
-                if self.min_freq < value_float < self.max_freq:
+                if self.min_freq <= value_float <= self.max_freq:
                     self.frequency.set(round(value_float, 4))
                     self.entry.delete(0, tk.END)
                     self.entry.insert(0, str(self.frequency.get()))

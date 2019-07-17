@@ -3,6 +3,8 @@
 import visa
 from ThorlabsPM100 import ThorlabsPM100
 import time
+from matplotlib import pyplot as plt
+import numpy as np
 
 rm = visa.ResourceManager()
 resources = rm.list_resources()
@@ -10,6 +12,11 @@ inst = rm.open_resource(resources[0])
 #print(inst.query('*IDN?'))
 power_meter = ThorlabsPM100(inst=inst)
 
-while True:
-    print(power_meter.read)
-    time.sleep(.1)
+f = []
+
+for _ in range(1000):
+    f.append(power_meter.read)
+
+plt.Figure()
+plt.plot(f)
+plt.show()
