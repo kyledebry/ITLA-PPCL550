@@ -297,6 +297,7 @@ class Controller:
             self.view.main_and_commands.commands.button_scan.change_text("Stop Scan")
             self.view.main_and_commands.commands.button_jump.disable()
             self.view.main_and_commands.commands.button_sweep.disable()
+            self.view.main_and_commands.commands.button_scan.enable()
             self.go_to_scan_monitor()
         else:
             self.stop_clean_scan.set()
@@ -435,19 +436,34 @@ class Model:
         p_prev = None
         f_prev = None
 
+        stop_pm_event = Event()
+        power_queue = Queue()
+        time_queue = Queue()
+
+        pm_read_thread = Thread(target=self.pm_read, args=(time_queue, power_queue, stop_pm_event))
+        pm_read_thread.start()
+
         while not end_event.is_set():
             queue = Queue(maxsize=1)
             laser_read_thread = Thread(target=self.laser_read, args=(queue, ))
             laser_read_thread.start()
             output_powers_list = []
             measured_time_list = []
-            while laser_read_thread.is_alive():
-                output_powers_list.append(self.power_meter.read)
-                measured_time_list.append(time.perf_counter())
+
             laser_read_thread.join()
 
-            output_powers_list.append(self.power_meter.read)
-            measured_time_list.append(time.perf_counter())
+            stop_pm_event.set()
+            pm_read_thread.join()
+
+            while not time_queue.empty():
+                measured_time_list.append(time_queue.get())
+
+            while not power_queue.empty():
+                output_powers_list.append(power_queue.get())
+
+            pm_read_thread = Thread(target=self.pm_read, args=(time_queue, power_queue, stop_pm_event))
+            stop_pm_event.clear()
+            pm_read_thread.start()
 
             output_powers = np.array(output_powers_list)
             measured_time = np.array(measured_time_list)
@@ -487,6 +503,11 @@ class Model:
         results = input_power, offset, t
 
         queue.put(results)
+
+    def pm_read(self, time_queue: Queue, power_queue: Queue, stop: Event):
+        while not stop.is_set():
+            power_queue.put(self.power_meter.read)
+            time_queue.put(time.perf_counter())
 
     def pm_update(self, end_event: Event, take_data: Event):
         self.power_meter_connected.wait()
