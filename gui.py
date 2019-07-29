@@ -62,6 +62,7 @@ class Controller:
         self.scan_data = {'x': np.array([]), 'y': np.array([])}
         self.power_data = {'t': [], 'p': []}
         self.sweep_data = {'x': np.array([]), 'y': np.array([])}
+        self.sweep_to = 0
 
         self.view.navigation.button_close.add_callback(self.close)
         self.view.main_and_commands.commands.button_on.add_callback(self.laser_on)
@@ -158,7 +159,7 @@ class Controller:
             progress = min(1 - math.sqrt(abs(offset_ghz / 10000)), 0)
             self.progress_bar(progress)
         elif self.progress is Controller.ProgressType.CLEAN_SWEEP:
-            progress = 0.5 + offset_ghz / self.clean_sweep_frequency
+            progress = 0.5 + offset_ghz / (self.clean_sweep_frequency + 0.0001)
             self.progress_bar(progress)
 
     def disconnect_laser(self):
@@ -235,14 +236,23 @@ class Controller:
     def key_jump(self, event):
         print(event)
         print(event.keysym)
-        new_freq = round(self.model.frequency.get(), 4)
-        if event.keysym == "Right":
-            new_freq += 0.00012
-        elif event.keysym == "Left":
-            new_freq -= 0.00012
-        key_jump_thread = Thread(target=self.model.clean_jump, args=(new_freq,))
+
         if self.model.on.get() and self.progress == Controller.ProgressType.NONE:
+            new_freq = round(self.model.frequency.get(), 4)
+            if event.keysym == "Right":
+                new_freq += 0.00012
+            elif event.keysym == "Left":
+                new_freq -= 0.00012
+            key_jump_thread = Thread(target=self.model.clean_jump, args=(new_freq,))
             key_jump_thread.start()
+        elif self.model.on.get() and self.progress in (Controller.ProgressType.CLEAN_SWEEP_MONITOR,
+                                                       Controller.ProgressType.CLEAN_SWEEP):
+            if event.keysym == "Right":
+                self.sweep_to += 1
+            elif event.keysym == "Left":
+                self.sweep_to -= 1
+            key_sweep_to_thread = Thread(target=self.model.clean_sweep_to_offset, args=(self.sweep_to,))
+            key_sweep_to_thread.start()
 
     def key_shift_jump(self, event):
         print(event)
@@ -276,6 +286,7 @@ class Controller:
             self.view.main_and_commands.commands.button_sweep.change_text("Stop Sweep")
             self.view.main_and_commands.commands.button_jump.disable()
             self.view.main_and_commands.commands.button_scan.disable()
+            self.sweep_to = 0
             clean_sweep_thread = Thread(target=self.model.clean_sweep_start,
                                         args=(self.clean_sweep_frequency, self.clean_sweep_speed))
             clean_sweep_thread.start()
@@ -283,7 +294,7 @@ class Controller:
             self.progress = Controller.ProgressType.NONE
             self.view.change_status("Frequency sweep stopped.")
             self.view.main_and_commands.commands.button_sweep.change_text("Frequency Sweep")
-            self.model.clean_sweep_stop()
+            Thread(target=self.model.clean_sweep_stop).start()
             self.progress_bar(0)
             self.view.main_and_commands.commands.button_jump.enable()
             self.view.main_and_commands.commands.button_scan.enable()
@@ -615,6 +626,10 @@ class Model:
 
     def clean_jump(self, frequency):
         self.clean_jump_active.set(True)
+        self.clean_sweep_stop()
+        with self.lock:
+            self.laser.wait_nop()
+        power_reference = self.power.get()
         with self.lock:
             self.laser.clean_jump_start(frequency)
 
@@ -648,6 +663,13 @@ class Model:
         with self.lock:
             self.laser.clean_jump_finish()
 
+        time_wait = time.perf_counter() + 1
+
+        while self.power.get() < 0.8 * power_reference and time.perf_counter() < time_wait:
+            time.sleep(.1)
+
+        self.clean_sweep_start(0, 1)
+
         self.clean_jump_active.set(False)
 
     def clean_sweep_start(self, frequency, speed):
@@ -665,6 +687,15 @@ class Model:
         with self.lock:
             self.laser.clean_sweep_stop()
         self.clean_sweep_state.set(None)
+
+    def clean_sweep_to_offset(self, offset):
+        self.clean_sweep_state.set("Sweeping to offset of {} GHz".format(offset))
+        with self.lock:
+            self.laser.clean_sweep_to_offset(offset)
+
+        while abs(self.offset.get() - offset) > 0.1:
+            time.sleep(0.1)
+        self.clean_sweep_state.set("Pausing sweep at offset of {} GHz".format(offset))
 
     def clean_scan(self, start_frequency: float, stop_frequency: float, speed: float, stop: Event, take_data: Event):
         assert stop_frequency > start_frequency
@@ -991,7 +1022,7 @@ class CommandBar(tk.Frame):
         self.button_jump.grid(row=1, column=1, sticky=full_sticky)
         self.button_jump.disable()
 
-        self.sweep_entry = FrequencyEntryAndLabel(self, "Sweep range (GHz):", 50, 0.1, 50)
+        self.sweep_entry = FrequencyEntryAndLabel(self, "Sweep range (GHz):", 50, 0, 50)
         self.sweep_entry.grid(row=0, column=2, padx=5)
         self.speed_entry = FrequencyEntryAndLabel(self, "Sweep speed (GHz/sec):", 20, 0.1, 50)
         self.speed_entry.grid(row=0, column=3, padx=5)

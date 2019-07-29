@@ -498,30 +498,30 @@ class Laser(ITLA):
     def clean_sweep_pause(self, offset=None):
         assert isinstance(self, Laser)
 
-        offset_1 = self.offset()
-
-        print(('Current offset: %f GHz' % offset_1))
-
-        offset_2 = self.offset()
-
-        while offset_2 == offset_1:
-            offset_2 = self.offset()
-            print(('Offset 2: %f' % offset_2))
-        moving_positive = offset_2 > offset_1
-
-        offset_stop = offset_2 + 2 * (offset_2 - offset_1)
-
-        if offset_stop < -25:
-            offset_stop = -24
-        elif offset_stop > 25:
-            offset_stop = 24
-
-        if moving_positive:
-            offset_stop_int = math.ceil(offset_stop)
-        else:
-            offset_stop_int = math.floor(offset_stop)
-
         if offset is None:
+            offset_1 = self.offset()
+
+            print(('Current offset: %f GHz' % offset_1))
+
+            offset_2 = self.offset()
+
+            while offset_2 == offset_1:
+                offset_2 = self.offset()
+                print(('Offset 2: %f' % offset_2))
+            moving_positive = offset_2 > offset_1
+
+            offset_stop = offset_2 + 2 * (offset_2 - offset_1)
+
+            if offset_stop < -25:
+                offset_stop = -24
+            elif offset_stop > 25:
+                offset_stop = 24
+
+            if moving_positive:
+                offset_stop_int = math.ceil(offset_stop)
+            else:
+                offset_stop_int = math.floor(offset_stop)
+
             offset = offset_stop_int
         else:
             offset = round(offset)
@@ -533,6 +533,10 @@ class Laser(ITLA):
 
         stop = self.itla_signed_communicate(Laser.REG_Csweepstop, offset, Laser.WRITE)
         print(('Stopping at %d GHz' % stop))
+
+    def clean_sweep_to_offset(self, offset):
+        self.clean_sweep_start()
+        self.clean_sweep_pause(offset)
 
     def clean_sweep_stop(self):
         """Stops execution of clean sweep and exits low-noise mode"""

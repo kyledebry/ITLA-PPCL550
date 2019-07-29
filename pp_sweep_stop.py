@@ -9,83 +9,54 @@ from laser import Laser
 import logging
 import time
 
-laser = Laser('COM2', 115200, logging.DEBUG)
+laser = Laser()
 
 freq = 195
 
-laser_err = laser.laser_on(freq, logging.DEBUG)
+laser_err = laser.laser_on(freq)
+print('Laser error: %d' % laser_err)
+laser.read_error()
 
-    laser_err = laser.laser_on(freq)
+time.sleep(1)
 
-    print('Laser error: %d' % laser_err)
-    laser.read_error()
+if laser_err == Laser.NOERROR:
 
-    time.sleep(1)
-
-    if laser_err == Laser.NOERROR:
-
-        laser.clean_sweep_prep(50, 20000)
-
-        laser.clean_sweep_start()
-
-        offset_GHz = laser.offset()
-
-    if laser_err == Laser.NOERROR:
-
-        wait_time = time.perf_counter() + 5
-
-        while offset_GHz > -150 and time.perf_counter() < wait_time:
-            offset_GHz = laser.offset()
-            logging.info('Clean sweep offset: %d GHz' % offset_GHz)
-            time.sleep(0.2)
+    laser.clean_sweep_prep(5, 5000)
 
     laser.clean_sweep_start()
+
+    laser.clean_sweep_pause(-5)
 
     offset_GHz = laser.offset()
 
-        while time.perf_counter() < wait_time + 5:
-            offset_GHz = laser.offset()
-            logging.info('Clean sweep offset: %d GHz' % offset_GHz)
-            time.sleep(0.2)
+    wait_time = time.perf_counter() + 10
 
-    laser.clean_sweep_pause(20)
-
-    wait_time = time.clock() + 5
-
-        logging.info('Clean sweep off: %d' % laser.itla_communicate(0xE5, 0, Laser.WRITE))
-        time.sleep(3)
-        laser.read_error()
-        laser.wait_nop()
-        time.sleep(1)
-        logging.debug('Low noise mode: %d' % laser.itla_communicate(0x90, 0, Laser.WRITE))
-        laser.read_error()
-
-    print('Done looping')
-    logging.debug('Resuming laser...')
+    while time.perf_counter() < wait_time:
+        offset_GHz = laser.offset()
+        print('Clean sweep offset: %d GHz' % offset_GHz)
+        print("NOP: %d" % laser.check_nop())
+        time.sleep(0.2)
 
     laser.clean_sweep_start()
+    laser.clean_sweep_pause(-4)
 
-    else:
-        logging.warning('Another error occurred: %d' % laser_err)
+    offset_GHz = laser.offset()
 
-    logging.info('Pausing laser')
-    laser.clean_sweep_pause()
+    while time.perf_counter() < wait_time + 5:
+        offset_GHz = laser.offset()
+        print('Clean sweep offset: %d GHz' % offset_GHz)
+        time.sleep(0.2)
 
-    time.sleep(3)
-
-    logging.info('Clean sweep off: %d' % laser.ITLACommunicate(0xE5, 0, Laser.WRITE))
+    logging.info('Clean sweep off: %d' % laser.itla_communicate(0xE5, 0, Laser.WRITE))
     time.sleep(3)
     laser.read_error()
     laser.wait_nop()
     time.sleep(1)
-    logging.debug('Low noise mode: %d' % laser.ITLACommunicate(0x90, 0, Laser.WRITE))
+    logging.debug('Low noise mode: %d' % laser.itla_communicate(0x90, 0, Laser.WRITE))
     laser.read_error()
-
-    time.sleep(5)
 
     laser.laser_off()
     laser.itla_disconnect()
-
 else:
     logging.warning('Another error occurred: %d' % laser_err)
 # except Exception as e:
