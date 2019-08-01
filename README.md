@@ -3,7 +3,7 @@ Software to control the PurePhotonics PPCL550 ITLA
 
 The two most useful files I wrote are ``laser.py`` and ``gui.py``. The others have some examples that may be useful, but may also be outdated. ``pure_photonics_utils.py`` is a modified/improved version of the Python code supplied on the PurePhotonics website. 
  
-``laser.py`` contains a lot of user-friendly methods for operating the laser. You will first need to update the definitions at the top of the file for the COM port # and paths to the calibration files you generated. Then, you can instantiate an instance of the Laser class with no parameters and it will establish a serial connection with the laser. Then, call the laser_on method to power on the laser. 
+``laser.py`` contains a lot of user-friendly methods for operating the laser. You will first need to update the definitions at the top of the file for the COM port # and paths to the calibration files you generated. Then, you can instantiate an instance of the ``Laser`` class with no parameters and it will establish a serial connection with the laser. Then, call the ``laser_on`` method to power on the laser. 
  
 ## Important methods: 
 - ``check_nop``: this reads the laser's ``NOP`` register, which contains flags about the laser's status. A value of 16 indicates that the laser is ready. Values higher than 16 indicate that the laser is still stabilizing or turning on, or potentially that there is an error. The ``wait_nop`` method can be used to wait until the ``NOP`` register reads 16. 
